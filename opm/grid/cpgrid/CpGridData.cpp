@@ -29,7 +29,11 @@ namespace cpgrid
 
 CpGridData::CpGridData(const CpGridData& g)
     : index_set_(new IndexSet(*this)), local_id_set_(new IdSet(*this)),
-      global_id_set_(new LevelGlobalIdSet(local_id_set_, this)), partition_type_indicator_(new PartitionTypeIndicator(*this)), ccobj_(g.ccobj_)
+      global_id_set_(new LevelGlobalIdSet(local_id_set_, this)), partition_type_indicator_(new PartitionTypeIndicator(*this)),
+      ccobj_(g.ccobj_), use_unique_boundary_ids_(g.use_unique_boundary_ids_)
+#if HAVE_MPI
+    , cell_comm_(g.ccobj_)
+#endif    
 {
 #if HAVE_MPI
     cell_interfaces_=std::make_tuple(Interface(ccobj_),Interface(ccobj_),Interface(ccobj_),Interface(ccobj_),Interface(ccobj_));
@@ -40,6 +44,9 @@ CpGridData::CpGridData()
     : index_set_(new IndexSet(*this)), local_id_set_(new IdSet(*this)),
       global_id_set_(new LevelGlobalIdSet(local_id_set_, this)), partition_type_indicator_(new PartitionTypeIndicator(*this)),
       ccobj_(Dune::MPIHelper::getCommunicator()), use_unique_boundary_ids_(false)
+#if HAVE_MPI
+    , cell_comm_(Dune::MPIHelper::getCommunicator())
+#endif 
 {
 #if HAVE_MPI
     cell_interfaces_=std::make_tuple(Interface(ccobj_),Interface(ccobj_),Interface(ccobj_),Interface(ccobj_),Interface(ccobj_));
@@ -49,18 +56,15 @@ CpGridData::CpGridData()
 CpGridData::CpGridData(MPIHelper::MPICommunicator comm)
     : index_set_(new IndexSet(*this)), local_id_set_(new IdSet(*this)),
       global_id_set_(new LevelGlobalIdSet(local_id_set_, this)), partition_type_indicator_(new PartitionTypeIndicator(*this)),
+<<<<<<< HEAD
       ccobj_(comm), use_unique_boundary_ids_(false), cell_comm_(comm)
 {
+=======
+      ccobj_(comm), use_unique_boundary_ids_(false)
+>>>>>>> 4bee258d311fd6cbfaeef2561982cd0597943c87
 #if HAVE_MPI
-    cell_interfaces_=std::make_tuple(Interface(ccobj_),Interface(ccobj_),Interface(ccobj_),Interface(ccobj_),Interface(ccobj_));
-#endif
-}
-
-
-CpGridData::CpGridData(CpGrid&)
-  : index_set_(new IndexSet(*this)),   local_id_set_(new IdSet(*this)),
-    global_id_set_(new LevelGlobalIdSet(local_id_set_, this)),  partition_type_indicator_(new PartitionTypeIndicator(*this)),
-    ccobj_(Dune::MPIHelper::getCommunicator()), use_unique_boundary_ids_(false)
+    , cell_comm_(comm)
+#endif       
 {
 #if HAVE_MPI
     cell_interfaces_=std::make_tuple(Interface(ccobj_),Interface(ccobj_),Interface(ccobj_),Interface(ccobj_),Interface(ccobj_));
