@@ -56,12 +56,7 @@ CpGridData::CpGridData()
 CpGridData::CpGridData(MPIHelper::MPICommunicator comm)
     : index_set_(new IndexSet(*this)), local_id_set_(new IdSet(*this)),
       global_id_set_(new LevelGlobalIdSet(local_id_set_, this)), partition_type_indicator_(new PartitionTypeIndicator(*this)),
-<<<<<<< HEAD
-      ccobj_(comm), use_unique_boundary_ids_(false), cell_comm_(comm)
-{
-=======
       ccobj_(comm), use_unique_boundary_ids_(false)
->>>>>>> 4bee258d311fd6cbfaeef2561982cd0597943c87
 #if HAVE_MPI
     , cell_comm_(comm)
 #endif       
