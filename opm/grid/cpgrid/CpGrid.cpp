@@ -117,8 +117,8 @@ namespace Dune
 {
 
     CpGrid::CpGrid()
-        : data_( new cpgrid::CpGridData()),
-          current_view_data_(data_.get()),
+        : data_({std::make_shared<cpgrid::CpGridData>()}),
+          current_view_data_(data_[0].get()),
           distributed_data_(),
           cell_scatter_gather_interfaces_(new InterfaceMap),
           point_scatter_gather_interfaces_(new InterfaceMap),
@@ -127,13 +127,33 @@ namespace Dune
 
 
     CpGrid::CpGrid(MPIHelper::MPICommunicator comm)
-        : data_( new cpgrid::CpGridData(comm)),
-          current_view_data_(data_.get()),
+        : data_({std::make_shared<cpgrid::CpGridData>(comm)}),
+          current_view_data_(data_[0].get()),
           distributed_data_(),
           cell_scatter_gather_interfaces_(new InterfaceMap),
           point_scatter_gather_interfaces_(new InterfaceMap),
           global_id_set_(*current_view_data_)
     {}
+
+std::vector<int>
+CpGrid::zoltanPartitionWithoutScatter([[maybe_unused]] const std::vector<cpgrid::OpmWellType> * wells,
+                                      [[maybe_unused]] const double* transmissibilities,
+                                      [[maybe_unused]] int numParts,
+                                      [[maybe_unused]] const double zoltanImbalanceTol)
+{
+    std::vector<int> cell_part(this->numCells());
+#if HAVE_MPI
+    auto& cc = data_[0]->ccobj_;
+#ifdef HAVE_ZOLTAN
+    EdgeWeightMethod met = EdgeWeightMethod(1);
+
+    return cpgrid::zoltanGraphPartitionGridForJac(*this, wells, transmissibilities, cc, met, 0,
+                                                  numParts, zoltanImbalanceTol);
+
+#endif
+#endif
+    return cell_part;
+}
 
 
 std::pair<bool, std::vector<std::pair<std::string,bool> > >
@@ -156,7 +176,7 @@ CpGrid::scatterGrid(EdgeWeightMethod method,
     static_cast<void>(method);
     static_cast<void>(zoltanImbalanceTol);
 
-    if(distributed_data_)
+    if(!distributed_data_.empty())
     {
         std::cerr<<"There is already a distributed version of the grid."
                  << " Maybe scatterGrid was called before?"<<std::endl;
@@ -164,7 +184,7 @@ CpGrid::scatterGrid(EdgeWeightMethod method,
     }
 
 #if HAVE_MPI
-    auto& cc = data_->ccobj_;
+    auto& cc = data_[0]->ccobj_;
 
     if (cc.size() > 1)
     {
@@ -318,7 +338,7 @@ CpGrid::scatterGrid(EdgeWeightMethod method,
                 procsWithZeroCells += (cellsOnProc == 0);
             }
             std::ostringstream ostr;
-            ostr << "\nLoad balancing distributes " << data_->size(0)
+            ostr << "\nLoad balancing distributes " << data_[0]->size(0)
                  << " active cells on " << cc.size() << " processes as follows:\n";
             ostr << "  rank   owned cells   overlap cells   total cells\n";
             ostr << "--------------------------------------------------\n";
@@ -404,29 +424,31 @@ CpGrid::scatterGrid(EdgeWeightMethod method,
             }
         }
 
-        distributed_data_.reset(new cpgrid::CpGridData(cc));
-        distributed_data_->setUniqueBoundaryIds(data_->uniqueBoundaryIds());
+
+        // distributed_data should be empty at this point.
+        distributed_data_.push_back(std::make_shared<cpgrid::CpGridData>(cc));
+        distributed_data_[0]->setUniqueBoundaryIds(data_[0]->uniqueBoundaryIds());
         // Just to be sure we assume that only master knows
-        cc.broadcast(&distributed_data_->use_unique_boundary_ids_, 1, 0);
+        cc.broadcast(&distributed_data_[0]->use_unique_boundary_ids_, 1, 0);
 
         // Create indexset
-        distributed_data_->cellIndexSet().beginResize();
+        distributed_data_[0]->cellIndexSet().beginResize();
         for(const auto& entry: importList)
         {
-            distributed_data_->cellIndexSet().add(std::get<0>(entry), ParallelIndexSet::LocalIndex(std::get<3>(entry), AttributeSet(std::get<2>(entry)), true));
+            distributed_data_[0]->cellIndexSet().add(std::get<0>(entry), ParallelIndexSet::LocalIndex(std::get<3>(entry), AttributeSet(std::get<2>(entry)), true));
         }
-        distributed_data_->cellIndexSet().endResize();
+        distributed_data_[0]->cellIndexSet().endResize();
         // add an interface for gathering/scattering data with communication
         // forward direction will be scatter and backward gather
         // Interface will communicate from owner to all
         setupSendInterface(exportList, *cell_scatter_gather_interfaces_);
         setupRecvInterface(importList, *cell_scatter_gather_interfaces_);
 
-        distributed_data_->distributeGlobalGrid(*this,*this->current_view_data_, computedCellPart);
-        global_id_set_.insertIdSet(*distributed_data_);
+        distributed_data_[0]->distributeGlobalGrid(*this,*this->current_view_data_, computedCellPart);
+        global_id_set_.insertIdSet(*distributed_data_[0]);
 
 
-        current_view_data_ = distributed_data_.get();
+        current_view_data_ = distributed_data_[0].get();
         return std::make_pair(true, wells_on_proc);
     }
     else
@@ -517,7 +539,7 @@ CpGrid::scatterGrid(EdgeWeightMethod method,
         // Only rank 0 has the full data. Use that for writing.
         if ( current_view_data_->ccobj_.rank() == 0 )
         {
-            data_->writeSintefLegacyFormat(grid_prefix);
+            data_[0]->writeSintefLegacyFormat(grid_prefix);
         }
     }
 

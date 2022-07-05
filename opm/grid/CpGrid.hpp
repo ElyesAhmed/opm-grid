@@ -828,7 +828,7 @@ namespace Dune
         template<class DataHandle>
         bool loadBalance(DataHandle& data,
 #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
-			 decltype(data.fixedSize(0,0)) overlapLayers=1, bool useZoltan = true)
+                         decltype(data.fixedSize(0,0)) overlapLayers=1, bool useZoltan = true)
 #else
                          decltype(data.fixedsize(0,0)) overlapLayers=1, bool useZoltan = true)
 #endif
@@ -890,6 +890,15 @@ namespace Dune
             return ret;
         }
 
+         /// \brief Partitions the grid using Zoltan without decomposing and distributing it among processes.
+         /// \param wells The wells of the eclipse.
+         /// \param transmissibilities The transmissibilities used to calculate the edge weights.
+         /// \param numParts Number of parts in the partition.
+         /// \return An array with the domain index for each cell.
+         std::vector<int> zoltanPartitionWithoutScatter(const std::vector<cpgrid::OpmWellType> * wells,
+                                                        const double* transmissibilities, int numParts,
+                                                        const double zoltanImbalanceTol);
+
         /// The new communication interface.
         /// \brief communicate objects for all codims on a given level
         /// \param data The data handle describing the data. Has to adhere to the
@@ -937,7 +946,7 @@ namespace Dune
 
 
         const std::vector<double>& zcornData() const {
-            return data_->zcornData();
+            return current_view_data_->zcornData();
         }
 
 
@@ -1390,9 +1399,9 @@ namespace Dune
         void scatterData(DataHandle& handle) const
         {
 #if HAVE_MPI
-            if(!distributed_data_)
+            if(distributed_data_.empty())
                 OPM_THROW(std::runtime_error, "Moving Data only allowed with a load balanced grid!");
-            distributed_data_->scatterData(handle, data_.get(), distributed_data_.get(), cellScatterGatherInterface(),
+            distributed_data_[0]->scatterData(handle, data_[0].get(), distributed_data_[0].get(), cellScatterGatherInterface(),
                                            pointScatterGatherInterface());
 #else
             // Suppress warnings for unused argument.
@@ -1410,9 +1419,9 @@ namespace Dune
         void gatherData(DataHandle& handle) const
         {
 #if HAVE_MPI
-            if(!distributed_data_)
+            if(distributed_data_.empty())
                 OPM_THROW(std::runtime_error, "Moving Data only allowed with a load balance grid!");
-            distributed_data_->gatherData(handle, data_.get(), distributed_data_.get());
+            distributed_data_[0]->gatherData(handle, data_[0].get(), distributed_data_[0].get());
 #else
             // Suppress warnings for unused argument.
             (void) handle;
@@ -1477,15 +1486,15 @@ namespace Dune
         /// \brief Switch to the global view.
         void switchToGlobalView()
         {
-            current_view_data_=data_.get();
+            current_view_data_=data_[0].get();
         }
 
         /// \brief Switch to the distributed view.
         void switchToDistributedView()
         {
-            if (! distributed_data_)
+            if (distributed_data_.empty())
                 OPM_THROW(std::logic_error, "No distributed view available in grid");
-            current_view_data_=distributed_data_.get();
+            current_view_data_=distributed_data_[0].get();
         }
         //@}
 
@@ -1575,13 +1584,13 @@ namespace Dune
 
         /** @brief The data stored in the grid.
          *
-         * All the data of the grid is stored there and
-         * calls are forwarded to it.*/
-        std::shared_ptr<cpgrid::CpGridData> data_;
+         * All the data of all grids are stored there and
+         * calls are forwarded to relevant grid.*/
+        std::vector<std::shared_ptr<cpgrid::CpGridData>> data_;
         /** @brief A pointer to data of the current View. */
         cpgrid::CpGridData* current_view_data_;
         /** @brief The data stored for the distributed grid. */
-        std::shared_ptr<cpgrid::CpGridData> distributed_data_;
+        std::vector<std::shared_ptr<cpgrid::CpGridData>> distributed_data_;
         /**
          * @brief Interface for scattering and gathering cell data.
          *
