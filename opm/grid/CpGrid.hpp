@@ -577,55 +577,14 @@ namespace Dune
         ///        Returns true if the grid has changed, false otherwise.
         bool adapt();
 
-        /// @brief Triggers the grid refinement process, allowing to select diffrent refined level grids.
-        ///
-        /// @param [in] throwOnFailure       If true, throws an error when elements are marked for refinement but not
-        ///                                  actually refined during addLgrsUpdateLeafView() or autoRefine().
-        ///                                  This can occur, for example, for aquifer cells and connections, which
-        ///                                  may be marked ("1"). For globalRefine() and adapt(), this
-        ///                                  should be false, and such elements are ignored.
-        /// @param [in] cells_per_dim_vec    For each set of marked elements for refinement, that will belong to a same
-        ///                                  refined level grid, number of (refined) cells in each direction that each
-        ///                                  parent cell should be refined to.
-        /// @param [in] assignRefinedLevel   Vector with size equal to total amount of cells of the starting grid where
-        ///                                  the marked elements belong. In each entry, the refined level grid where the
-        ///                                  refined entities of the (parent) marked element should belong is stored.
-        /// @param [in] lgr_name_vec         Each refined level grid name, e.g. {"LGR1", "LGR2"}.
-        /// @param [in] startIJK_vec         Default empty vector. When isCARFIN, the starting ijk Cartesian index of each
-        ///                                  block of cells to be refined.
-        /// @param [in] endIJK_vec           Default empty vector. When isCARFIN, the final ijk Cartesian index of each
-        ///                                  block of cells to be refined.
-        bool refineAndUpdateGrid(bool throwOnFailure,
-                                 const std::vector<std::array<int,3>>& cells_per_dim_vec,
-                                 const std::vector<int>& assignRefinedLevel,
-                                 const std::vector<std::string>& lgr_name_vec,
-                                 const std::vector<std::array<int,3>>& startIJK_vec = std::vector<std::array<int,3>>{},
-                                 const std::vector<std::array<int,3>>& endIJK_vec = std::vector<std::array<int,3>>{});
 
         /// @brief Clean up refinement markers - set every element to the mark 0 which represents 'doing nothing'
         void postAdapt();
         /// --------------- Adaptivity (end) ---------------
 
     private:
-        void updateCornerHistoryLevels(const std::vector<std::vector<std::array<int,2>>>& cornerInMarkedElemWithEquivRefinedCorner,
-                                       const std::map<std::array<int,2>,std::array<int,2>>& elemLgrAndElemLgrCorner_to_refinedLevelAndRefinedCorner,
-                                       const std::unordered_map<int,std::array<int,2>>& adaptedCorner_to_elemLgrAndElemLgrCorner,
-                                       const int& corner_count,
-                                       const std::vector<std::array<int,2>>& preAdaptGrid_corner_history,
-                                       const int& preAdaptMaxLevel,
-                                       const int& newLevels);
 
-        void globalIdsPartitionTypesLgrAndLeafGrids(const std::vector<int>& assignRefinedLevel,
-                                                    const std::vector<std::array<int,3>>& cells_per_dim_vec,
-                                                    const std::vector<int>& lgr_with_at_least_one_active_cell);
 
-        /// @brief Retrieves the global ids of the first child for each parent cell in the grid.
-        ///
-        /// If a cell has no children, its entry is set to -1, indicating an invalid id.
-        ///
-        /// @param[out] parentToFirstChildGlobalIds A vector that will be filled with the first child global IDs.
-        ///                                         The vector is resized to match the number of parent cells.
-        void getFirstChildGlobalIds([[maybe_unused]] std::vector<int>& parentToFirstChildGlobalIds);
     public:
         /// @brief Synchronizes cell global ids across processes after load balancing.
         ///
@@ -635,52 +594,12 @@ namespace Dune
         void syncDistributedGlobalCellIds();
     private:
 
-        /// @brief For refined level grids created based on startIJK and endIJK values, compute the "local ijk/Cartesian index" within the LGR.
-        ///
-        /// It's confusing that this "localIJK" is stored in CpGridData member global_cell_. Potential explanation: level zero grid is also called
-        /// "GLOBAL" grid.
-        /// Example: a level zero grid with dimension 4x3x3, an LGR with startIJK = {1,2,2}, endIJK = {3,3,3}, and cells_per_dim = {2,2,2}.
-        /// Then the dimension of the LGR is (3-1)*2 x (3-2)*2 x (3-2)* 2 = 4x2x2 = 16. Therefore the global_cell_lgr minimim value should be 0,
-        /// the maximum should be 15.
-        /// To invoke this method, each refined level grid must have 1. logical_cartesian_size_, 2. cell_to_idxInParentCell_, and 3. cells_per_dim_
-        /// already populated.
-        ///
-        /// @param [in] level    Grid index where LGR is stored
-        /// @param [out] global_cell_lgr
-        void computeGlobalCellLgr(const int& level, const std::array<int,3>& startIJK, std::vector<int>& global_cell_lgr);
 
-        /// @brief For a leaf grid with with LGRs, we assign the global_cell_ values of either the parent cell or the equivalent cell from
-        ///        level zero.
-        ///        For nested refinement, we lookup the oldest ancestor, from level zero.
-        void computeGlobalCellLeafGridViewWithLgrs(std::vector<int>& global_cell_leaf);
 
     private:
-        /// @brief Mark selected elements, assign them their corresponding level, and detect active LGRs.
-        ///
-        /// Given blocks of cells selected for refinement, mark selected elements and assign them their corresponding
-        /// (refined) level (grid). When level zero grid is distributed before refinement, detect which LGRs are active
-        /// in each process.
-        ///
-        /// @param [in] startIJK_vec    Vector of ijk values denoting the start of each block of cells selected for refinement.
-        /// @param [in] endIJK_vec      Vector of ijk values denoting the end of each block of cells selected for refinement.
-        /// @param [out] assignRefinedLevel   Assign level for the refinement of each marked cell. Example: refined element from
-        ///                                   LGR1 have level 1, refined element rfom LGR2 have level 2, etc.
-        /// @param [out] lgr_with_at_least_one_active_cell Determine if an LGR is not empty in a given process, we set
-        ///                                                lgr_with_at_least_one_active_cell[in that level] to 1 if it contains
-        ///                                                at least one active cell, and to 0 otherwise.
-        void markElemAssignLevelDetectActiveLgrs(const std::vector<std::array<int,3>>& startIJK_vec,
-                                                 const std::vector<std::array<int,3>>& endIJK_vec,
-                                                 std::vector<int>& assignRefinedLevel,
-                                                 std::vector<int>& lgr_with_at_least_one_active_cell);
 
-        /// @brief For a grid whose level zero has been distributed and then locally refined, populate the cell_index_set_ of each refined level grid.
-        void populateCellIndexSetRefinedGrid(int level);
 
-        /// @brief For a grid whose level zero has been distributed and then locally refined, populate the cell_index_set_ of the leaf grid view.
-        void populateCellIndexSetLeafGridView();
 
-        /// @brief For a grid whose level zero has been distributed and then locally refined, populate the global_id_set_ of the leaf grid view.
-        void populateLeafGlobalIdSet();
 
     public:
 
