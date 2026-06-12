@@ -52,6 +52,7 @@
 #include <opm/grid/common/MetisPartition.hpp>
 #include <opm/grid/common/ZoltanPartition.hpp>
 #include <opm/grid/GraphOfGridWrappers.hpp>
+#include <opm/grid/cpgrid/refinement/RefinementBuilder.hpp>
 //#include <opm/grid/common/ZoltanGraphFunctions.hpp>
 #include <opm/grid/common/GridPartitioning.hpp>
 //#include <opm/grid/common/WellConnections.hpp>
@@ -1561,13 +1562,36 @@ void CpGrid::syncDistributedGlobalCellIds()
     // No-op: refinement is not available, level zero global ids are already consistent.
 }
 
-void CpGrid::addLgrsUpdateLeafView(const std::vector<std::array<int,3>>& /*cells_per_dim_vec*/,
-                                   const std::vector<std::array<int,3>>& /*startIJK_vec*/,
-                                   const std::vector<std::array<int,3>>& /*endIJK_vec*/,
-                                   const std::vector<std::string>& /*lgr_name_vec*/,
-                                   const std::vector<std::string>& /*lgr_parent_grid_name_vec*/)
+void CpGrid::addLgrsUpdateLeafView(const std::vector<std::array<int,3>>& cells_per_dim_vec,
+                                   const std::vector<std::array<int,3>>& startIJK_vec,
+                                   const std::vector<std::array<int,3>>& endIJK_vec,
+                                   const std::vector<std::string>& lgr_name_vec,
+                                   const std::vector<std::string>& lgr_parent_grid_name_vec)
 {
-    OPM_THROW(std::logic_error, "Local grid refinement has been removed in opm-gridrefined; the static refinement rebuild is not available yet.");
+    const std::size_t numBoxes = startIJK_vec.size();
+    if (cells_per_dim_vec.size() != numBoxes || endIJK_vec.size() != numBoxes
+        || lgr_name_vec.size() != numBoxes
+        || (!lgr_parent_grid_name_vec.empty() && lgr_parent_grid_name_vec.size() != numBoxes)) {
+        OPM_THROW(std::invalid_argument, "Sizes of provided refinement vectors must match.");
+    }
+
+    std::vector<Opm::Refinement::BlockRefinement> requests(numBoxes);
+    for (std::size_t box = 0; box < numBoxes; ++box) {
+        requests[box].name = lgr_name_vec[box];
+        if (!lgr_parent_grid_name_vec.empty()) {
+            requests[box].parentGridName = lgr_parent_grid_name_vec[box];
+        }
+        requests[box].cellsPerDim = cells_per_dim_vec[box];
+        requests[box].startIJK = startIJK_vec[box];
+        requests[box].endIJK = endIJK_vec[box];
+    }
+    Opm::Refinement::validateBlockRefinements(requests);
+
+    auto* refinementBuilder = Opm::Refinement::builder();
+    if (!refinementBuilder) {
+        OPM_THROW(std::logic_error, "Local grid refinement has been removed in opm-gridrefined; no refinement builder is registered yet.");
+    }
+    refinementBuilder->build(*this, requests);
 }
 
 void CpGrid::autoRefine(const std::array<int,3>& /*nxnynz*/)
