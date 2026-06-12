@@ -34,7 +34,8 @@ Evaluate applying the Part II short-term items to the *existing* LGR code so it 
 
 Milestones, gated on the deck matrix (below):
 
-1. **Strip**: remove `LgrHelpers.*`, `refineAndUpdateGrid` + helpers, `NestedRefinementUtilities`, corner-history/level bookkeeping; keep DUNE interface stubs; unmodified opm-simulators still builds and runs the non-LGR test decks. (Branch: `strip-lgr`.)
+1. **Strip** — **done** (branch `strip-lgr`, 2026-06-12): removed `LgrHelpers.*`, `refineAndUpdateGrid` + private helpers, `NestedRefinementUtilities`, `CpGridUtilities`, `refineSingleCell`/`refineCellifiedPatch`, mark/adapt plumbing and the LGR test suite (~17.8k lines). Kept the public DUNE facade as inert/throwing stubs, the multilevel data model, and `LgrOutputHelpers`. Verified: all 39 remaining opm-grid tests pass (serial+parallel); *unmodified* opm-simulators builds (superbuild variant in `superbuild-refined/`, build dir `builds/refined`); SPE9 runs serially and with `mpirun -np 2`; a CARFIN deck aborts with a clear "refinement removed" message.
+   Discovery: mainline flow lists CARFIN/ENDFIN as *critical unsupported keywords* (`UnsupportedFlowKeywords.cpp`) — CARFIN decks only reach the grid machinery with `--parsing-strictness=low`, even on upstream master with full LGR support. Note for Track 0/upstreaming: enabling CARFIN by default upstream is itself a pending step.
 2. **Seam**: LevelHierarchy state component + RefinementBuilder interface (§6); ids by construction (root cell, child index) — no insertIdSet/global-id sync machinery (§IV.2).
 3. **Builder, conforming core**: S2 preprocessor-level builder for unfaulted patches; levels as views into one corner/geometry pool (§IV.2-1).
 4. **General corner-point**: pinched parents; fault-adjacent boundaries via `findconnections` + lateral splitting at sub-pillar positions (§8.2-S2); edge-conformal post-pass option for VEM (§3).
