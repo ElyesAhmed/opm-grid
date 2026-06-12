@@ -395,46 +395,11 @@ public:
         return  global_cell_;
     }
 
-    /// @brief Check all cells selected for refinement have no NNCs (no neighbor connections).
-    ///        Assumption: all grid cells are active.
-    bool hasNNCs(const std::vector<int>& cellIndices) const;
 
-    /// @brief Mark entity for refinement or coarsening.
-    ///
-    /// Refinement on CpGrid is partially supported for Cartesian grids, with the keyword CARFIN.
-    /// This only works for entities of codim 0.
-    ///
-    /// @param [in] refCount   To mark the element for
-    ///                        - refinement, refCount == 1
-    ///                        - doing nothing, refCount == 0
-    ///                        - coarsening, refCount == -1 (not applicable yet)
-    /// @param [in] element    Entity<0>. Currently, an element from the GLOBAL grid (level zero).
-    /// @param [in] throwOnFailure If true, the function will throw an exception if the marking is invalid.
-    /// @return true, if marking was succesfull.
-    ///         false, if marking was not possible.
-    bool mark(int refCount, const cpgrid::Entity<0>& element, bool throwOnFailure = false);
 
-    /// @brief Return refinement mark for entity.
-    ///
-    /// @return refinement mark (1 refinement, 0 doing nothing, -1 coarsening - not supported yet).
-    int getMark(const cpgrid::Entity<0>& element) const;
 
-    /// @brief Set mightVanish flags for elements that will be refined in the next adapt() call
-    ///        Need to be called after elements have been marked for refinement.
-    ///
-    ///        Communicate marks accross processes, in parallel runs.
-    ///        An element may be marked somewhere in opm-simulators because it does not fulfill a
-    ///        certain property, regardless of whether it belongs to the interior or overlap
-    ///        partition.
-    ///
-    /// @return True if at least one element has been marked for refinement, false otherwise.
-    bool preAdapt();
 
-    /// TO DO: Documentation. Triggers the grid refinement process - Currently, returns preAdapt()
-    bool adapt();
 
-    /// @brief Clean up refinement/coarsening markers - set every element to the mark 0 which represents 'doing nothing'
-    void postAdapt();
 
 private:
     std::array<Dune::FieldVector<double,3>,8> getReferenceRefinedCorners(int idx_in_parent_cell, const std::array<int,3>& cells_per_dim) const;
@@ -491,32 +456,6 @@ public:
         return level_to_leaf_cells_[level_cell_idx];
     }
 
-    /// @brief Refine a single cell and return a shared pointer of CpGridData type.
-    ///
-    /// refineSingleCell() takes a cell and refines it in a chosen amount of cells (per direction); creating the
-    /// geometries, topological relations, etc. Stored in a CpGridData object. Additionally, containers for
-    /// parent-to-new-born entities are buil, as well as, new-born-to-parent. Maps(<int,bool>) to detect parent
-    /// faces or cells are also provided. (Cell with 6 faces required).
-    ///
-    /// @param [in] cells_per_dim                      Number of (refined) cells in each direction that each parent cell should be refined to.
-    /// @param [in] parent_idx                         Parent cell index, cell to be refined.
-    /// @param [out] faceInMarkedElemAndRefinedFaces   For each original (parent grid) face, stores marked element indices where it appears
-    ///                                                (<=2) and their refined face indices in each single-cell-refinement (of each parent
-    ///                                                cell where the face/intersection appears).
-    ///
-    /// @return refined_grid_ptr                  Shared pointer pointing at refined_grid.
-    /// @return parent_to_refined_corners         For each corner of the parent cell, we store the index of the
-    ///                                           refined corner that coincides with the old one.
-    ///                                           We assume they are ordered 0,1,..7
-    ///                                                              6---7
-    ///                                                      2---3   |   | TOP FACE
-    ///                                                      |   |   4---5
-    ///                                                      0---1 BOTTOM FACE
-    std::tuple< const std::shared_ptr<CpGridData>,
-                const std::vector<std::array<int,2>>>                  // parent_to_refined_corners(~boundary_old_to_new_corners)
-    refineSingleCell(const std::array<int,3>& cells_per_dim,
-                     const int& parent_idx,
-                     std::vector<std::vector<std::pair<int, std::vector<int>>>>& faceInMarkedElemAndRefinedFaces) const;
 
     // @breif Compute center of an entity/element/cell in the Eclipse way:
     //        - Average of the 4 corners of the bottom face.
@@ -809,8 +748,6 @@ private:
     std::shared_ptr<LevelGlobalIdSet> global_id_set_;
     /** @brief The indicator of the partition type of the entities */
     std::shared_ptr<PartitionTypeIndicator> partition_type_indicator_;
-    /** Mark elements to be refined **/
-    std::vector<int> mark_;
     /** Level of the current CpGridData (0 when it's "GLOBAL", 1,2,.. for LGRs). */
     int level_{0};
     /** Copy of (CpGrid object).data_ associated with the CpGridData object. */
