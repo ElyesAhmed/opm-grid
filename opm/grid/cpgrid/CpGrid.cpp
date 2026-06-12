@@ -52,6 +52,8 @@
 #include <opm/grid/common/MetisPartition.hpp>
 #include <opm/grid/common/ZoltanPartition.hpp>
 #include <opm/grid/GraphOfGridWrappers.hpp>
+#include <opm/grid/cpgrid/refinement/ConformingBlockBuilder.hpp>
+#include <opm/grid/cpgrid/refinement/GridStateWriter.hpp>
 #include <opm/grid/cpgrid/refinement/RefinementBuilder.hpp>
 //#include <opm/grid/common/ZoltanGraphFunctions.hpp>
 #include <opm/grid/common/GridPartitioning.hpp>
@@ -1164,9 +1166,36 @@ int CpGrid::faceVertex(int face, int local_index) const
     return current_data_->back()->face_to_point_[face][local_index];
 }
 
-Dune::cpgrid::Intersection CpGrid::getParentIntersectionFromLgrBoundaryFace(const Dune::cpgrid::Intersection& /*intersection*/) const
+Dune::cpgrid::Intersection CpGrid::getParentIntersectionFromLgrBoundaryFace(const Dune::cpgrid::Intersection& intersection) const
 {
-    OPM_THROW(std::logic_error, "Local grid refinement has been removed in opm-gridrefined; the static refinement rebuild is not available yet.");
+    if ( intersection.neighbor()) {
+        // Handle only intersections between cells at different levels where at least one
+        // cell belongs to a grid whose parent is GLOBAL (level zero).
+        int levelIn = intersection.inside().level();
+        int levelOut = intersection.outside().level();
+        if (levelIn != levelOut) {
+            bool refinedCellsWithAtLeastOneLvl0Father = (levelIn*levelOut >0 ) &&
+                ((intersection.inside().father().level() == 0) || ((intersection.outside().father().level() == 0)));
+            bool coarseAndRefinedCells =  (levelIn*levelOut == 0);
+            if (refinedCellsWithAtLeastOneLvl0Father || coarseAndRefinedCells) {
+                // Get the equivalent level-0 cell if intersection.inside() is already at level 0,
+                // or the coarsest ancestor at level 0 if it is a refined cell.
+                // In both cases, intersection.indexInInside() is the correct face index to match:
+                // - coarse inside (level 0): indexInInside() is already the level-0 face index.
+                // - refined inside: fine cells inherit face directions from their parent, so
+                //   indexInInside() equals the parent's face index.
+                const auto& insideOrigin = intersection.inside().getOrigin();
+                for (const auto& originIntersection : intersections(this->levelGridView(0), insideOrigin)) {
+                    if (originIntersection.indexInInside() == intersection.indexInInside()) {
+                        return originIntersection;
+                    }
+                }
+            }
+            OPM_THROW(std::invalid_argument, "Parent intersection not found for face with index: " + std::to_string(intersection.id()) +
+                      " and index in inside: " + std::to_string(intersection.indexInInside()));
+        }
+    }
+    OPM_THROW(std::invalid_argument, "Face is on the boundary of the grid");
 }
 
 
@@ -1586,6 +1615,17 @@ void CpGrid::addLgrsUpdateLeafView(const std::vector<std::array<int,3>>& cells_p
     Opm::Refinement::validateBlockRefinements(requests);
 
     auto* refinementBuilder = Opm::Refinement::builder();
+    std::unique_ptr<Opm::Refinement::Builder> deckBuilder;
+    if (!refinementBuilder) {
+        // No explicitly registered builder: when the deck requested LGRs,
+        // the corner-point description was retained at construction time
+        // and the default conforming builder can be used directly.
+        if (auto retained = Opm::Refinement::GridStateWriter::retainedCornerPointInput(*currentData()[0])) {
+            deckBuilder = std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
+                retained->dims, retained->coord, retained->zcorn, retained->actnum);
+            refinementBuilder = deckBuilder.get();
+        }
+    }
     if (!refinementBuilder) {
         OPM_THROW(std::logic_error, "Local grid refinement has been removed in opm-gridrefined; no refinement builder is registered yet.");
     }

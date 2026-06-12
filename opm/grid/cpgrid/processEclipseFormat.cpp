@@ -352,6 +352,20 @@ namespace cpgrid
             ecl_state->prune_global_for_schedule_run();
         }
 
+        // When the deck requests LGRs, retain the (post-MINPV) corner-point
+        // description: the refinement builder resamples it, and the grid
+        // does not otherwise keep COORD/ZCORN (DESIGN-builder.md D4).
+        if (ecl_state && ecl_state->getLgrs().size() > 0) {
+            auto retained = std::make_shared<Opm::Refinement::RetainedCornerPointInput>();
+            retained->dims = { static_cast<int>(ecl_grid.getNX()),
+                               static_cast<int>(ecl_grid.getNY()),
+                               static_cast<int>(ecl_grid.getNZ()) };
+            retained->coord = coordData;
+            retained->zcorn = zcornData;
+            retained->actnum = actnumData;
+            this->retained_cp_input_ = std::move(retained);
+        }
+
         // this variable is only required because getCellZvals() needs
         // a coord_t instead of a plain integer pointer...
         coord_t logicalCartesianSize;

@@ -192,6 +192,7 @@ list(APPEND PUBLIC_HEADER_FILES
   opm/grid/cpgrid/refinement/GridStateWriter.hpp
   opm/grid/cpgrid/refinement/LevelGridAssembler.hpp
   opm/grid/cpgrid/refinement/RefinementBuilder.hpp
+  opm/grid/cpgrid/refinement/RetainedCornerPointInput.hpp
   opm/grid/cpgrid/refinement/RefinementRequest.hpp
   opm/grid/cpgrid/OrientedEntityTable.hpp
   opm/grid/cpgrid/PartitionIteratorRule.hpp

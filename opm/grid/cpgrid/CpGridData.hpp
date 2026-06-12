@@ -81,6 +81,7 @@ namespace Opm
 class EclipseState;
 }
 namespace Opm { namespace Refinement { struct GridStateWriter; } }
+#include <opm/grid/cpgrid/refinement/RetainedCornerPointInput.hpp>
 
 namespace Dune
 {
@@ -770,6 +771,11 @@ private:
     // SUITABLE FOR ALL LEVELS INCLUDING LEAFVIEW
     /** Child cells and their parents. Entry is {-1,-1} when cell has no father. */ // {level parent cell, parent cell index}
     std::vector<std::array<int,2>> child_to_parent_cells_;
+
+    /// Corner-point description this grid was built from; only retained
+    /// (during processEclipseFormat) when the deck requests LGRs, as input
+    /// for the refinement builder. Accessed via Refinement::GridStateWriter.
+    std::shared_ptr<const Opm::Refinement::RetainedCornerPointInput> retained_cp_input_;
     /** Level-grid or Leaf-grid cell to parent cell and refined-cell-in-parent-cell index (number between zero and total amount
         of children per parent (cells_per_dim[0]_*cells_per_dim_[1]*cells_per_dim_[2])). Entry is -1 when cell has no father. */
     std::vector<int> cell_to_idxInParentCell_;

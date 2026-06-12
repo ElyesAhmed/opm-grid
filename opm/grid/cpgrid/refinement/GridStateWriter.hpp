@@ -20,6 +20,9 @@
 #define OPM_GRID_REFINEMENT_GRIDSTATEWRITER_HEADER_INCLUDED
 
 #include <opm/grid/cpgrid/CpGridData.hpp>
+#include <opm/grid/cpgrid/refinement/RetainedCornerPointInput.hpp>
+
+#include <memory>
 
 #include <array>
 #include <tuple>
@@ -81,6 +84,12 @@ struct GridStateWriter
     static Dune::cpgrid::DefaultGeometryPolicy& geometry(Data& grid);
     static const std::vector<std::array<int,2>>& childToParent(const Data& grid);
     static const std::vector<int>& idxInParent(const Data& grid);
+
+    /// Corner-point input retained for refinement (nullptr unless the deck
+    /// requested LGRs at construction time).
+    static void setRetainedCornerPointInput(Data& grid,
+                                            std::shared_ptr<const RetainedCornerPointInput> input);
+    static std::shared_ptr<const RetainedCornerPointInput> retainedCornerPointInput(const Data& grid);
 };
 
 } // namespace Refinement
