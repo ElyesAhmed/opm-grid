@@ -111,6 +111,7 @@ list(APPEND TEST_SOURCE_FILES
   tests/cpgrid/grdecl_refinement_test.cpp
   tests/cpgrid/level_grid_assembler_test.cpp
   tests/cpgrid/conforming_builder_test.cpp
+  tests/cpgrid/refined_structure_comparison_test.cpp
   tests/cpgrid/orientedentitytable_test.cpp
   tests/cpgrid/partition_iterator_test.cpp
   tests/cpgrid/shifted_cart_test.cpp
