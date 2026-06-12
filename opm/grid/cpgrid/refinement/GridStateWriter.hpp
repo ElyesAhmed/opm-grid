@@ -19,43 +19,68 @@
 #ifndef OPM_GRID_REFINEMENT_GRIDSTATEWRITER_HEADER_INCLUDED
 #define OPM_GRID_REFINEMENT_GRIDSTATEWRITER_HEADER_INCLUDED
 
-#include <array>
-#include <vector>
+#include <opm/grid/cpgrid/CpGridData.hpp>
 
-namespace Dune
-{
-namespace cpgrid
-{
-class CpGridData;
-}
-}
+#include <array>
+#include <tuple>
+#include <vector>
 
 namespace Opm
 {
 namespace Refinement
 {
 
-/// The single write-access point for multilevel/refinement state inside
+/// The single access point for multilevel/refinement state inside
 /// CpGridData. Befriended by CpGridData so the refinement builder can stay
 /// outside the grid classes without widening the friend surface: the
 /// builder is the only writer of this state (docs/DESIGN-builder.md §5),
-/// and every mutation goes through these named operations.
+/// and every read/mutation of otherwise-private members goes through these
+/// named operations.
 struct GridStateWriter
 {
+    using Data = Dune::cpgrid::CpGridData;
+
     /// Set the level index a grid occupies in the hierarchy.
-    static void setLevel(Dune::cpgrid::CpGridData& grid, int level);
+    static void setLevel(Data& grid, int level);
 
     /// Set the per-parent subdivision factors of a refined level grid.
-    static void setCellsPerDim(Dune::cpgrid::CpGridData& grid,
-                               const std::array<int,3>& cellsPerDim);
+    static void setCellsPerDim(Data& grid, const std::array<int,3>& cellsPerDim);
 
-    /// Set the parent relations of a refined level grid:
-    /// childToParent[c] = {parent level, parent cell index}, and
-    /// idxInParent[c] = lattice index i + j*rx + k*rx*ry within the parent
-    /// (the convention geometryInFather() expects).
-    static void setParentRelations(Dune::cpgrid::CpGridData& grid,
+    /// Set the parent relations of a refined level or leaf grid:
+    /// childToParent[c] = {parent level, parent cell index} ({-1,-1} for
+    /// cells without a parent), and idxInParent[c] = lattice index
+    /// i + j*rx + k*rx*ry within the parent (-1 without a parent).
+    static void setParentRelations(Data& grid,
                                    std::vector<std::array<int,2>> childToParent,
                                    std::vector<int> idxInParent);
+
+    /// Set parent-to-children on the grid the parents live in:
+    /// entry = {child level, child indices} or {-1, {}}.
+    static void setParentToChildren(Data& grid,
+                                    std::vector<std::tuple<int, std::vector<int>>> parentToChildren);
+
+    /// Set leaf-to-level mapping on the leaf: entry = {level, level index}.
+    static void setLeafToLevel(Data& grid, std::vector<std::array<int,2>> leafToLevel);
+
+    /// Set corner history: entry = {birth level, corner index there} or {-1,-1}.
+    static void setCornerHistory(Data& grid, std::vector<std::array<int,2>> cornerHistory);
+
+    static void setLogicalCartesianSize(Data& grid, const std::array<int,3>& size);
+    static void setGlobalCell(Data& grid, std::vector<int> globalCell);
+    static void setIndexSet(Data& grid, std::size_t numCells, std::size_t numPoints);
+    static void setRefinementMaxLevel(Data& grid, int maxLevel);
+
+    /// Topology/geometry table access for assembling a grid (and reading
+    /// the tables of source grids during assembly).
+    static std::vector<std::array<int,8>>& cellToPoint(Data& grid);
+    static Dune::cpgrid::OrientedEntityTable<0,1>& cellToFace(Data& grid);
+    static Dune::cpgrid::OrientedEntityTable<1,0>& faceToCell(Data& grid);
+    static Opm::SparseTable<int>& faceToPoint(Data& grid);
+    static Dune::cpgrid::EntityVariable<enum face_tag, 1>& faceTag(Data& grid);
+    static Dune::cpgrid::SignedEntityVariable<Dune::FieldVector<double,3>, 1>& faceNormals(Data& grid);
+    static Dune::cpgrid::DefaultGeometryPolicy& geometry(Data& grid);
+    static const std::vector<std::array<int,2>>& childToParent(const Data& grid);
+    static const std::vector<int>& idxInParent(const Data& grid);
 };
 
 } // namespace Refinement

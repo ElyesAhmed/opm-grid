@@ -1589,7 +1589,19 @@ void CpGrid::addLgrsUpdateLeafView(const std::vector<std::array<int,3>>& cells_p
     if (!refinementBuilder) {
         OPM_THROW(std::logic_error, "Local grid refinement has been removed in opm-gridrefined; no refinement builder is registered yet.");
     }
+    const int preBuildMaxLevel = maxLevel();
     refinementBuilder->build(*this, requests);
+
+    // Register the new level grids: names and the id-set facade.
+    for (std::size_t box = 0; box < numBoxes; ++box) {
+        lgr_names_[requests[box].name] = preBuildMaxLevel + static_cast<int>(box) + 1;
+    }
+    if (global_id_set_ptr_) {
+        auto& data = currentData();
+        for (std::size_t gridIdx = preBuildMaxLevel + 1; gridIdx < data.size(); ++gridIdx) {
+            global_id_set_ptr_->insertIdSet(*data[gridIdx]);
+        }
+    }
 }
 
 void CpGrid::autoRefine(const std::array<int,3>& /*nxnynz*/)
