@@ -22,8 +22,9 @@
 
 #include <opm/grid/cpgrid/refinement/GridStateWriter.hpp>
 
-#include <opm/grid/cpgrid/CpGridData.hpp>
+#include <opm/grid/cpgrid/Indexsets.hpp>
 
+#include <memory>
 #include <utility>
 
 namespace Opm
@@ -31,23 +32,103 @@ namespace Opm
 namespace Refinement
 {
 
-void GridStateWriter::setLevel(Dune::cpgrid::CpGridData& grid, int level)
+void GridStateWriter::setLevel(Data& grid, int level)
 {
     grid.level_ = level;
 }
 
-void GridStateWriter::setCellsPerDim(Dune::cpgrid::CpGridData& grid,
-                                     const std::array<int,3>& cellsPerDim)
+void GridStateWriter::setCellsPerDim(Data& grid, const std::array<int,3>& cellsPerDim)
 {
     grid.cells_per_dim_ = cellsPerDim;
 }
 
-void GridStateWriter::setParentRelations(Dune::cpgrid::CpGridData& grid,
+void GridStateWriter::setParentRelations(Data& grid,
                                          std::vector<std::array<int,2>> childToParent,
                                          std::vector<int> idxInParent)
 {
     grid.child_to_parent_cells_ = std::move(childToParent);
     grid.cell_to_idxInParentCell_ = std::move(idxInParent);
+}
+
+void GridStateWriter::setParentToChildren(Data& grid,
+                                          std::vector<std::tuple<int, std::vector<int>>> parentToChildren)
+{
+    grid.parent_to_children_cells_ = std::move(parentToChildren);
+}
+
+void GridStateWriter::setLeafToLevel(Data& grid, std::vector<std::array<int,2>> leafToLevel)
+{
+    grid.leaf_to_level_cells_ = std::move(leafToLevel);
+}
+
+void GridStateWriter::setCornerHistory(Data& grid, std::vector<std::array<int,2>> cornerHistory)
+{
+    grid.corner_history_ = std::move(cornerHistory);
+}
+
+void GridStateWriter::setLogicalCartesianSize(Data& grid, const std::array<int,3>& size)
+{
+    grid.logical_cartesian_size_ = size;
+}
+
+void GridStateWriter::setGlobalCell(Data& grid, std::vector<int> globalCell)
+{
+    grid.global_cell_ = std::move(globalCell);
+}
+
+void GridStateWriter::setIndexSet(Data& grid, std::size_t numCells, std::size_t numPoints)
+{
+    grid.index_set_ = std::make_unique<Dune::cpgrid::IndexSet>(numCells, numPoints);
+}
+
+void GridStateWriter::setRefinementMaxLevel(Data& grid, int maxLevel)
+{
+    grid.refinement_max_level_ = maxLevel;
+}
+
+std::vector<std::array<int,8>>& GridStateWriter::cellToPoint(Data& grid)
+{
+    return grid.cell_to_point_;
+}
+
+Dune::cpgrid::OrientedEntityTable<0,1>& GridStateWriter::cellToFace(Data& grid)
+{
+    return grid.cell_to_face_;
+}
+
+Dune::cpgrid::OrientedEntityTable<1,0>& GridStateWriter::faceToCell(Data& grid)
+{
+    return grid.face_to_cell_;
+}
+
+Opm::SparseTable<int>& GridStateWriter::faceToPoint(Data& grid)
+{
+    return grid.face_to_point_;
+}
+
+Dune::cpgrid::EntityVariable<enum face_tag, 1>& GridStateWriter::faceTag(Data& grid)
+{
+    return grid.face_tag_;
+}
+
+Dune::cpgrid::SignedEntityVariable<Dune::FieldVector<double,3>, 1>& GridStateWriter::faceNormals(Data& grid)
+{
+    return grid.face_normals_;
+}
+
+Dune::cpgrid::DefaultGeometryPolicy& GridStateWriter::geometry(Data& grid)
+{
+    return grid.geometry_;
+}
+
+const std::vector<std::array<int,2>>& GridStateWriter::childToParent(const Data& grid)
+{
+    return grid.child_to_parent_cells_;
+}
+
+const std::vector<int>& GridStateWriter::idxInParent(const Data& grid)
+{
+    return grid.cell_to_idxInParentCell_;
 }
 
 } // namespace Refinement
