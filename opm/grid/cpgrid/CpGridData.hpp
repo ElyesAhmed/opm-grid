@@ -80,6 +80,8 @@ namespace Opm
 {
 class EclipseState;
 }
+namespace Opm { namespace Refinement { struct GridStateWriter; } }
+
 namespace Dune
 {
 class CpGrid;
@@ -116,6 +118,7 @@ template<class T, int i> struct Mover;
  */
 class CpGridData
 {
+    friend struct ::Opm::Refinement::GridStateWriter;
     template<class T, int i> friend struct mover::Mover;
     friend class GlobalIdSet;
     friend class HierarchicIterator;
