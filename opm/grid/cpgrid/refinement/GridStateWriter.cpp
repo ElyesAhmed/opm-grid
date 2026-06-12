@@ -131,5 +131,16 @@ const std::vector<int>& GridStateWriter::idxInParent(const Data& grid)
     return grid.cell_to_idxInParentCell_;
 }
 
+void GridStateWriter::setRetainedCornerPointInput(Data& grid,
+                                                  std::shared_ptr<const RetainedCornerPointInput> input)
+{
+    grid.retained_cp_input_ = std::move(input);
+}
+
+std::shared_ptr<const RetainedCornerPointInput> GridStateWriter::retainedCornerPointInput(const Data& grid)
+{
+    return grid.retained_cp_input_;
+}
+
 } // namespace Refinement
 } // namespace Opm
