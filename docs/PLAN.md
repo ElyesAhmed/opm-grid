@@ -1,6 +1,6 @@
 # opm-gridrefined — development plan
 
-Goal: **static LGR for CARFIN decks on general corner-point grids** (faults, pinch-outs), correct and ECL-compatible, eventually upstreamable to OPM/opm-grid as a replacement-with-evidence. Full analysis in [lgr_review.md](lgr_review.md) (Parts I–IV); section references below point there.
+Goal: **static LGR for CARFIN decks on general corner-point grids** (faults, pinch-outs), correct and ECL-compatible, eventually upstreamable to OPM/opm-grid as a replacement-with-evidence. Full analysis in [lgr_review.md](lgr_review.md) (Parts I–IV); distilled lessons from the current implementation for the refactoring in [LESSONS.md](LESSONS.md).
 
 ## Strategy (Part IV, "Route A")
 
