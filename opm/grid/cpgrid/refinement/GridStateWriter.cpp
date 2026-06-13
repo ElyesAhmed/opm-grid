@@ -23,6 +23,7 @@
 #include <opm/grid/cpgrid/refinement/GridStateWriter.hpp>
 
 #include <opm/grid/cpgrid/Indexsets.hpp>
+#include <opm/grid/cpgrid/PartitionTypeIndicator.hpp>
 
 #include <memory>
 #include <utility>
@@ -140,6 +141,16 @@ void GridStateWriter::setRetainedCornerPointInput(Data& grid,
 std::shared_ptr<const RetainedCornerPointInput> GridStateWriter::retainedCornerPointInput(const Data& grid)
 {
     return grid.retained_cp_input_;
+}
+
+const std::vector<char>& GridStateWriter::cellPartitionTypes(const Data& grid)
+{
+    return grid.partition_type_indicator_->cell_indicator_;
+}
+
+void GridStateWriter::setCellPartitionTypes(Data& grid, std::vector<char> types)
+{
+    grid.partition_type_indicator_->cell_indicator_ = std::move(types);
 }
 
 } // namespace Refinement

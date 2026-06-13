@@ -36,6 +36,8 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <cstdio>
+#include <limits>
 
 namespace
 {
@@ -61,6 +63,10 @@ int axisOf(face_tag tag)
         throw std::logic_error("Unexpected face tag in refined level grid.");
     }
 }
+
+// In a distributed grid, face_to_cell uses this sentinel for a neighbor cell
+// that lives on another rank (not present locally).
+constexpr int kRemoteCell = std::numeric_limits<int>::max();
 
 } // anonymous namespace
 
@@ -279,7 +285,9 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
     for (int face = 0; face < numFaces0; ++face) {
         const auto row = faceToCell0[EntityRep<1>(face, true)];
         for (int e = 0; e < row.size(); ++e) {
-            if (boxOfCell[row[e].index()] >= 0) {
+            const int cell = row[e].index();
+            // A remote (off-rank) neighbor is never a local box cell.
+            if (cell != kRemoteCell && boxOfCell[cell] >= 0) {
                 faceDropped[face] = true;
                 break;
             }
@@ -345,12 +353,13 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
             }
             const auto cells = faceToCell0[EntityRep<1>(face, true)];
             for (int q = 0; q < cells.size(); ++q) {
-                if (cells[q].index() != parent) {
-                    neighbor = cells[q].index();
+                const int cell = cells[q].index();
+                if (cell != parent && cell != kRemoteCell) {
+                    neighbor = cell;
                 }
             }
         }
-        // No direction faces: domain boundary or inactive neighbor.
+        // No direction faces: domain boundary, inactive, or off-rank neighbor.
 
         verifiedNeighbor[key] = neighbor;
         return neighbor;
@@ -480,9 +489,14 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
         rowBuffer.clear();
         const auto srcRow = srcFaceToCell[EntityRep<1>(src.index, true)];
         for (int e = 0; e < srcRow.size(); ++e) {
-            const int leafCell = (src.grid == 0)
-                ? leafIdxOfCell0[srcRow[e].index()]
-                : leafIdxOfLevelCell[src.grid - 1][srcRow[e].index()];
+            const int srcCell = srcRow[e].index();
+            // Preserve the off-rank sentinel: a face to a remote cell stays
+            // a remote-neighbor face on the distributed leaf.
+            const int leafCell = (srcCell == kRemoteCell)
+                ? kRemoteCell
+                : (src.grid == 0)
+                    ? leafIdxOfCell0[srcCell]
+                    : leafIdxOfLevelCell[src.grid - 1][srcCell];
             rowBuffer.push_back(EntityRep<0>(leafCell, srcRow[e].orientation()));
         }
         if (mosaicOutside[face] >= 0) {
@@ -513,9 +527,29 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
         leafFaceGeom[face] = srcFaceGeom[src.index];
     }
 
-    // cell_to_face_ from the inverse relation (the same construction the
-    // preprocessor path uses).
-    leafFaceToCell.makeInverseRelation(leafCellToFace);
+    // cell_to_face_ as the inverse of face_to_cell. Built manually rather
+    // than via makeInverseRelation because face_to_cell may carry the
+    // off-rank sentinel (distributed grids), which the generic inverse — it
+    // sizes the table from the maximum cell index — cannot handle. The
+    // orientation convention matches makeInverseRelation: a cell keeps the
+    // face's orientation when it is on the face's normal side, else flips it.
+    {
+        std::vector<std::vector<EntityRep<1>>> cellFaces(numLeafCells);
+        for (int face = 0; face < numLeafFaces; ++face) {
+            const auto row = leafFaceToCell[EntityRep<1>(face, true)];
+            for (int e = 0; e < row.size(); ++e) {
+                const int cell = row[e].index();
+                if (cell == kRemoteCell) {
+                    continue; // remote neighbor: no local cell owns this side
+                }
+                const EntityRep<1> faceEnt(face, true);
+                cellFaces[cell].push_back(row[e].orientation() ? faceEnt : faceEnt.opposite());
+            }
+        }
+        for (int cell = 0; cell < numLeafCells; ++cell) {
+            leafCellToFace.appendRow(cellFaces[cell].begin(), cellFaces[cell].end());
+        }
+    }
 
     // ----- Leaf cell data ----------------------------------------------------
     leafCellToPoint.resize(numLeafCells);
@@ -560,6 +594,22 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
         leafCellGeom[cell] = Dune::cpgrid::Geometry<3,3>(geom.center(), geom.volume(),
                                                          leafCornersPtr,
                                                          leafCellToPoint[cell].data());
+    }
+
+    // Leaf partition types (distributed grids only): a coarse leaf cell
+    // keeps its level-zero type; a refined leaf cell inherits its parent's
+    // type (interior, since boxes are rank-interior). Without this the leaf
+    // partition_type_indicator_ is empty and every cell reports Interior.
+    const auto& level0Types = GridStateWriter::cellPartitionTypes(level0);
+    if (!level0Types.empty()) {
+        std::vector<char> leafTypes(numLeafCells);
+        for (int cell = 0; cell < numLeafCells; ++cell) {
+            const int parent0 = (leafChildToParent[cell][0] == -1)
+                ? leafToLevel[cell][1]      // coarse: it is the level-zero cell
+                : leafChildToParent[cell][1]; // refined: its level-zero parent
+            leafTypes[cell] = level0Types[parent0];
+        }
+        GridStateWriter::setCellPartitionTypes(*leaf, std::move(leafTypes));
     }
 
     // ----- Leaf metadata -------------------------------------------------------
