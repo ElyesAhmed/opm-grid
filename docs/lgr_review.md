@@ -134,6 +134,8 @@ Afterwards, the level hierarchy and parent-child maps are derived from the known
 
 ### 8.4 Exploiting the logical Cartesian structure — octrees for the dynamic part
 
+> **Update (2026-06-13):** this subsection is the original sketch. After the static + parallel rebuild on `strip-lgr`, a concrete, partly-implemented design supersedes it — see [DESIGN-parallel-octree.md](DESIGN-parallel-octree.md). Key revisions from experience: the leaf-view builder, per-octant geometry, and edge-conformal post-pass are **built**; construction-stable packed ids are not "for free" but **load-bearing** and required for parallel; and CpGrid's cell-overlap scatter is **not** a reliable base at rank boundaries, so the forest must own its **ghost-tree layer** rather than lean on p4est-style cell scatter. The two refinement restrictions the user asked for — what may be refined within a cell (clean hexahedra only; faults/degenerate cells restricted) and 2:1 balance between cells — are folded into that document.
+
 The corner-point grid hands us a perfect macro-structure for a **forest of octrees**: every active level-0 cell is a tree root, the forest connectivity is the level-0 adjacency (including fault faces, already computed by the preprocessor), and an octant's geometry is the trilinear image of its reference box in the root cell — exactly the arithmetic `refineSingleCell` already implements. With anisotropic factors the trees are k-ary rather than octal, which changes nothing structurally.
 
 What this buys over the current design:
