@@ -79,12 +79,23 @@ covered: `edge_conformal` demonstrably inserts the neighbour columns' nodes
 corner away from the complex pillar conserves volume — the edge-conformal
 coarse faces survive refinement. **Serial needs no fixes** for these cases.
 
-Caveat (future, for VEM): the *refined* level grids are built
-`edge_conformal=false`, so the refined leaf region is face- but not
-edge-conformal. Making the whole refined leaf edge-conformal needs a
-`make_edge_conformal` post-pass on the leaf (review §3) — and there, as
-noted, one must first sweep all four columns around each pillar to know the
-full node set before placing refined nodes. Not required for flow/TPFA.
+**Edge-conformal leaf — implemented as a toggle (2026-06-13).**
+`refinement/EdgeConformal.{hpp,cpp}::edgeConformalizeLeaf` makes the refined
+leaf edge-conformal: for every face edge it inserts the leaf nodes lying on
+that edge's interior into the face's node list (a spatial-hash sweep — the
+"know all nodes on a pillar/edge first" step). This closes the hanging-node
+gap that refinement opens on the LGR-boundary pillars and lateral edges for
+diagonal coarse neighbours. Only `face_to_point_` changes — no new corners,
+so cell geometry, face area and normal are untouched (verified: identical
+volume on/off). The toggle is a `ConformingBlockBuilder` constructor flag,
+**default off (current face-conformal behaviour)**; the deck path turns it
+on automatically when level zero was built `edge_conformal=true` (carried on
+`RetainedCornerPointInput`). Covered by
+`edge_conformal_refinement_test::edgeConformalToggleInsertsBoundaryNodes`.
+Not needed for flow/TPFA (face centroid/area/normal suffice); intended for
+VEM. Note: the refined level grids themselves remain `edge_conformal=false`
+internally — the leaf post-pass makes the *assembled* leaf conformal, which
+is what consumers see.
 
 ## Acceptance gate — deck matrix (Part II)
 

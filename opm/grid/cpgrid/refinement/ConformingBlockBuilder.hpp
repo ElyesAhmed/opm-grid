@@ -43,10 +43,16 @@ namespace Refinement
 class ConformingBlockBuilder : public Builder
 {
 public:
+    /// @param edgeConformal When true, the refined leaf is made
+    ///        edge-conformal (an edge-conformalization post-pass that
+    ///        inserts the refinement's boundary nodes into the coarse faces
+    ///        sharing those edges). Default false keeps the current,
+    ///        face-conformal-only behaviour.
     ConformingBlockBuilder(const std::array<int,3>& parentDims,
                            std::vector<double> coord,
                            std::vector<double> zcorn,
-                           std::vector<int> actnum);
+                           std::vector<int> actnum,
+                           bool edgeConformal = false);
 
     void build(Dune::CpGrid& grid,
                const std::vector<BlockRefinement>& requests) override;
@@ -56,6 +62,7 @@ private:
     std::vector<double> coord_;
     std::vector<double> zcorn_;
     std::vector<int> actnum_;
+    bool edgeConformal_;
 };
 
 } // namespace Refinement

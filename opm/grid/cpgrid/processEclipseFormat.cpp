@@ -363,6 +363,7 @@ namespace cpgrid
             retained->coord = coordData;
             retained->zcorn = zcornData;
             retained->actnum = actnumData;
+            retained->edgeConformal = edge_conformal;
             this->retained_cp_input_ = std::move(retained);
         }
 

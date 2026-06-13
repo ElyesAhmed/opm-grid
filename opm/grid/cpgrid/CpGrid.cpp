@@ -1622,7 +1622,8 @@ void CpGrid::addLgrsUpdateLeafView(const std::vector<std::array<int,3>>& cells_p
         // and the default conforming builder can be used directly.
         if (auto retained = Opm::Refinement::GridStateWriter::retainedCornerPointInput(*currentData()[0])) {
             deckBuilder = std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
-                retained->dims, retained->coord, retained->zcorn, retained->actnum);
+                retained->dims, retained->coord, retained->zcorn, retained->actnum,
+                retained->edgeConformal);
             refinementBuilder = deckBuilder.get();
         }
     }
