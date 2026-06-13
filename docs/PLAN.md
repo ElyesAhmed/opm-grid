@@ -67,6 +67,25 @@ Milestones, gated on the deck matrix (below):
    Result across the passing deck matrix (CARFIN, CARFIN1, CARFIN_GR, CARFIN_FLEX): **every INIT array bitwise-identical** (worst-rel 0.0; e.g. CARFIN_FLEX 152/152 arrays over 7 sections) and **every boundary TRANGL connection bitwise-identical** (e.g. CARFIN_FLEX 580/580, no only-A/only-B). Restart differs only at solver tolerance: on CARFIN_FLEX, peak |dP| 15.5 bar at step 1 (injection startup, 0.26% of ~5870 bar) decaying monotonically to ~0.7 bar (~0.01%) — the signature of linear-solver-path roundoff from internal leaf cell ordering, not discretization (a real difference would persist and INIT would not be bitwise-identical). SGAS's large *relative* diffs are near-zero-saturation artifacts (peak abs 0.04 at the moving gas front, also decaying). Newton-count differences (52-vs-49, 100-vs-99) are the same ordering effect.
    *Optional future check*: reproduce upstream's exact internal leaf ordering → bitwise-identical restart and matching Newton counts. Not needed for correctness (the above already proves identical discretization), but would make the equivalence trivially demonstrable.
 
+## Edge-conformal grids (serial) — works; no fixes needed
+
+`edge_conformal_refinement_test` (2026-06-13): refinement on grids built
+with `edge_conformal=true` works serially — a box away from a fault, and a
+box *containing* a fault, both conserve volume; a box boundary on a fault
+throws (the general faulted-boundary restriction, not edge-conformal
+specific). The **four-columns-faulted-around-a-pillar** torture grid is
+covered: `edge_conformal` demonstrably inserts the neighbour columns' nodes
+(total face-node count grows vs the plain grid), and refining the flat
+corner away from the complex pillar conserves volume — the edge-conformal
+coarse faces survive refinement. **Serial needs no fixes** for these cases.
+
+Caveat (future, for VEM): the *refined* level grids are built
+`edge_conformal=false`, so the refined leaf region is face- but not
+edge-conformal. Making the whole refined leaf edge-conformal needs a
+`make_edge_conformal` post-pass on the leaf (review §3) — and there, as
+noted, one must first sweep all four columns around each pillar to know the
+full node set before placing refined nodes. Not required for flow/TPFA.
+
 ## Acceptance gate — deck matrix (Part II)
 
 CI matrix from day one: unfaulted Cartesian / faulted / pinched / NNC / aquifer × serial / parallel × wells in/out of LGR; ECLIPSE reference output where available. Each milestone and Track 0 item is "done" when its rows pass.
