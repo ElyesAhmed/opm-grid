@@ -248,12 +248,12 @@ BOOST_AUTO_TEST_CASE(twoSeparatedBoxesAndGuards)
     BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
         parent.dims, parent.coord, parent.zcorn, parent.actnum));
 
-    // Touching boxes are rejected by the builder.
+    // Overlapping boxes are rejected (validation).
     BOOST_CHECK_THROW(grid.addLgrsUpdateLeafView({{2,2,2}, {2,2,2}},
-                                                 {{0,0,0}, {2,0,0}},
-                                                 {{2,2,2}, {4,2,2}},
+                                                 {{0,0,0}, {1,0,0}},
+                                                 {{3,2,2}, {4,2,2}},
                                                  {"A", "B"}),
-                      std::logic_error);
+                      std::invalid_argument);
     BOOST_CHECK_EQUAL(grid.maxLevel(), 0); // grid unchanged
 
     // Two separated boxes work.
@@ -345,8 +345,90 @@ BOOST_AUTO_TEST_CASE(edgeSharingBoxesMergeCorners)
     BOOST_CHECK_EQUAL(pointIds.size(), static_cast<std::size_t>(grid.size(3)));
 }
 
-// Face-sharing boxes are rejected (mosaic-mosaic pairing not implemented).
-BOOST_AUTO_TEST_CASE(faceSharingBoxesThrow)
+// Face-sharing boxes: the boundary faces of the two refined blocks on the
+// shared plane pair into interior faces. The out-of-face subdivision may
+// differ between the two boxes; the in-face subdivisions must match.
+BOOST_AUTO_TEST_CASE(faceSharingBoxes)
+{
+    auto parent = makeVerticalPillarGrid({4, 2, 2}, [](int, int, int k_) {
+        return 2.0*(cellOf(k_) + sideOf(k_));
+    });
+
+    Dune::CpGrid grid;
+    auto rawParent = parent.raw();
+    grid.processEclipseFormat(rawParent, false);
+    const double volumeBefore = totalVolume(grid);
+
+    BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
+        parent.dims, parent.coord, parent.zcorn, parent.actnum));
+
+    // Box A = i in [0,2), box B = i in [2,4); both full in j,k -> share the
+    // i=2 face. Different in-plane-normal factor (rx 2 vs 3), matching
+    // in-face factors (ry=rz=2).
+    grid.addLgrsUpdateLeafView({{2,2,2}, {3,2,2}},
+                               {{0,0,0}, {2,0,0}},
+                               {{2,2,2}, {4,2,2}},
+                               {"A", "B"});
+
+    BOOST_REQUIRE_EQUAL(grid.maxLevel(), 2);
+    BOOST_CHECK_CLOSE(totalVolume(grid), volumeBefore, 1e-8);
+    // Box A (8 parents x 2x2x2) + box B (8 parents x 3x2x2); no coarse left.
+    BOOST_CHECK_EQUAL(grid.size(0), 8*8 + 8*12);
+
+    // No coincident-distinct vertices (shared-face corners merged).
+    std::set<std::array<double,3>> coords;
+    int vertexCount = 0;
+    for (const auto& vertex : Dune::vertices(grid.leafGridView())) {
+        const auto& c = vertex.geometry().center();
+        coords.insert({c[0], c[1], c[2]});
+        ++vertexCount;
+    }
+    BOOST_CHECK_EQUAL(coords.size(), static_cast<std::size_t>(vertexCount));
+
+    // Two-sided intersection symmetry, and the A/B blocks are actually
+    // connected (interior faces pairing an A-child with a B-child exist).
+    std::map<std::pair<int,int>, int> pairCount;
+    int abConnections = 0;
+    const auto& dims = grid.logicalCartesianSize();
+    for (const auto& element : Dune::elements(grid.leafGridView())) {
+        for (const auto& intersection : Dune::intersections(grid.leafGridView(), element)) {
+            if (!intersection.neighbor()) {
+                continue;
+            }
+            const int in = intersection.inside().index();
+            const int out = intersection.outside().index();
+            pairCount[{std::min(in, out), std::max(in, out)}] += 1;
+            if (intersection.inside().hasFather() && intersection.outside().hasFather()) {
+                const int ci = grid.globalCell()[in] % dims[0];
+                const int co = grid.globalCell()[out] % dims[0];
+                // One side in box A's i-range [0,2), the other in B's [2,4).
+                if ((ci < 2) != (co < 2)) {
+                    ++abConnections;
+                }
+            }
+        }
+    }
+    for (const auto& [cells, count] : pairCount) {
+        BOOST_CHECK_EQUAL(count, 2);
+    }
+    // The shared i=2 face carries ry*rz = 2*2 = 4 connections per parent
+    // pair, 2x2 parent pairs in (j,k) -> 16 connections, counted twice.
+    BOOST_CHECK_EQUAL(abConnections, 16 * 2);
+
+    const auto& ids = grid.globalIdSet();
+    std::set<std::int64_t> cellIds, pointIds;
+    for (const auto& element : Dune::elements(grid.leafGridView())) {
+        cellIds.insert(ids.id(element));
+    }
+    for (const auto& vertex : Dune::vertices(grid.leafGridView())) {
+        pointIds.insert(ids.id(vertex));
+    }
+    BOOST_CHECK_EQUAL(cellIds.size(), static_cast<std::size_t>(grid.size(0)));
+    BOOST_CHECK_EQUAL(pointIds.size(), static_cast<std::size_t>(grid.size(3)));
+}
+
+// Non-matching in-face subdivisions are rejected.
+BOOST_AUTO_TEST_CASE(faceSharingNonMatchingSubdivisionsThrow)
 {
     auto parent = makeVerticalPillarGrid({4, 2, 2}, [](int, int, int k_) {
         return 2.0*(cellOf(k_) + sideOf(k_));
@@ -359,9 +441,8 @@ BOOST_AUTO_TEST_CASE(faceSharingBoxesThrow)
     BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
         parent.dims, parent.coord, parent.zcorn, parent.actnum));
 
-    // Box A = i in [0,2), box B = i in [2,4); both full in j,k -> share the
-    // i=2 face.
-    BOOST_CHECK_THROW(grid.addLgrsUpdateLeafView({{2,2,2}, {2,2,2}},
+    // ry differs (2 vs 3) on the shared i=2 face.
+    BOOST_CHECK_THROW(grid.addLgrsUpdateLeafView({{2,2,2}, {2,3,2}},
                                                  {{0,0,0}, {2,0,0}},
                                                  {{2,2,2}, {4,2,2}},
                                                  {"A", "B"}),

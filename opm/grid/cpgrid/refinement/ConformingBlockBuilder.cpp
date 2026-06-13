@@ -64,36 +64,37 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
                                    + req.parentGridName + "') is not supported yet.");
         }
     }
-    // Classify each box pair. With disjoint boxes (validated upstream), a
-    // pair either is fully separated, shares only edge(s)/corner(s), or
-    // shares a 2D face. Edge/corner sharing only needs cross-box refined
-    // *corner* identification (handled in the leaf assembler via the
-    // shared-coordinate pool); face sharing additionally needs mosaic-mosaic
-    // face pairing, which is not implemented yet.
+    // Conformity check for touching boxes. With disjoint boxes, a pair
+    // either is fully separated, shares an edge/corner, or shares a 2D
+    // face. The shared refined entities (corners along a shared edge,
+    // corners+faces on a shared face) coincide bitwise only if the
+    // subdivision factors match in the *shared* directions: the overlap
+    // dimension(s). The touch dimension(s) are parent-cell boundaries where
+    // corners are identified with level zero regardless. Subdivisions in a
+    // dimension where the boxes neither touch nor overlap are unconstrained
+    // (e.g. the out-of-face direction of two face-sharing boxes).
     for (std::size_t i = 0; i < requests.size(); ++i) {
         for (std::size_t j = i + 1; j < requests.size(); ++j) {
             const auto& a = requests[i];
             const auto& b = requests[j];
-            int touches = 0;   // dims where the boxes meet at a common plane
-            int overlaps = 0;  // dims where the index intervals overlap
+            // The boxes share an entity (corner/edge/face) only if they
+            // touch-or-overlap in every dimension; a gap in any dimension
+            // means they are fully separated and impose no constraint.
+            bool interacts = true;
             for (int c = 0; c < 3; ++c) {
-                const bool touch = (a.endIJK[c] == b.startIJK[c]) || (b.endIJK[c] == a.startIJK[c]);
+                const bool gap = (a.endIJK[c] < b.startIJK[c]) || (b.endIJK[c] < a.startIJK[c]);
+                interacts = interacts && !gap;
+            }
+            if (!interacts) {
+                continue;
+            }
+            for (int c = 0; c < 3; ++c) {
                 const bool overlap = (a.startIJK[c] < b.endIJK[c]) && (b.startIJK[c] < a.endIJK[c]);
-                touches += touch;
-                overlaps += overlap;
-            }
-            const bool sharesFace = (touches == 1) && (overlaps == 2);
-            const bool sharesEdgeOrCorner = (touches >= 2) && (touches + overlaps == 3);
-            if (sharesFace) {
-                throw std::logic_error("Refinement boxes '" + a.name + "' and '" + b.name
-                                       + "' share a face. Face-sharing LGRs are not supported yet.");
-            }
-            if (sharesEdgeOrCorner && (a.cellsPerDim != b.cellsPerDim)) {
-                // Equal factors guarantee the shared corners coincide
-                // bitwise (identical resampling arithmetic), so they merge
-                // exactly in the leaf assembler's shared-coordinate pool.
-                throw std::logic_error("Refinement boxes '" + a.name + "' and '" + b.name
-                                       + "' touch but have different subdivisions. Not supported yet.");
+                if (overlap && a.cellsPerDim[c] != b.cellsPerDim[c]) {
+                    throw std::logic_error("Refinement boxes '" + a.name + "' and '" + b.name
+                                           + "' meet with non-matching subdivisions in direction "
+                                           + std::to_string(c) + ". Not supported.");
+                }
             }
         }
     }

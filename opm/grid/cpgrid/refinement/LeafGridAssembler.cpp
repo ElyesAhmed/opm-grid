@@ -368,20 +368,39 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
             mosaicOutside.push_back(-1);
         }
     }
+    // Face-sharing LGRs: a boundary face of box A toward another refined
+    // box B pairs with B's matching boundary face. Both have the same
+    // merged corner set (corners already merged), so we key by it. The box
+    // seen first owns the leaf face; the partner maps onto it and patches
+    // in its cell as the second side (the same mechanism as a coarse
+    // mosaic neighbor, only the outside cell is refined).
+    std::map<std::vector<int>, int> sharedBoundaryFaceLeaf; // corner set -> owner leaf face
     for (int b = 0; b < numBoxes; ++b) {
         BoxData& box = boxes[b];
         auto& faceToCellL = GridStateWriter::faceToCell(*box.level);
         auto& faceTagL = GridStateWriter::faceTag(*box.level);
+        auto& faceToPointL = GridStateWriter::faceToPoint(*box.level);
         Dune::cpgrid::EntityVariableBase<enum face_tag>& tagsL = faceTagL;
         const auto& childToParent = GridStateWriter::childToParent(*box.level);
         box.faceToLeaf.assign(faceToCellL.size(), -1);
+
+        const auto mergedCornerSet = [&](int face) {
+            std::vector<int> set;
+            auto pts = faceToPointL[face];
+            for (auto p = pts.begin(); p != pts.end(); ++p) {
+                set.push_back(box.cornerToLeaf[*p]);
+            }
+            std::sort(set.begin(), set.end());
+            return set;
+        };
 
         for (int face = 0; face < faceToCellL.size(); ++face) {
             const auto row = faceToCellL[EntityRep<1>(face, true)];
             int outside = -1;
             if (row.size() == 1) {
                 // Boundary face of the refined block: internal hole, domain
-                // boundary, or block boundary toward a coarse neighbor.
+                // boundary, block boundary toward a coarse neighbor, or
+                // toward another refined box (face-sharing).
                 const int cell = row[0].index();
                 const bool normalOut = row[0].orientation();
                 const int axis = axisOf(tagsL.get(face));
@@ -392,11 +411,27 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
                                               cart / (box.refinedDims[0]*box.refinedDims[1]) };
                 lattice[axis] += side;
                 if (lattice[axis] < 0 || lattice[axis] >= box.refinedDims[axis]) {
-                    // Block boundary: find the coarse neighbor (or none).
+                    // Block boundary: find the neighbor parent (or none).
                     const int parent = childToParent[cell][1];
                     const int neighbor = outsideNeighborOf(b, parent, axis, side);
-                    if (neighbor >= 0) {
+                    if (neighbor >= 0 && boxOfCell[neighbor] < 0) {
+                        // Toward a coarse (unrefined) neighbor: mosaic.
                         outside = leafIdxOfCell0[neighbor];
+                    }
+                    else if (neighbor >= 0) {
+                        // Toward another refined box: pair the two faces.
+                        const auto key = mergedCornerSet(face);
+                        const auto it = sharedBoundaryFaceLeaf.find(key);
+                        const int thisCellLeaf = leafIdxOfLevelCell[b][cell];
+                        if (it != sharedBoundaryFaceLeaf.end()) {
+                            // Partner: map onto the owner's face, supply our
+                            // cell as its second side, do not emit a face.
+                            box.faceToLeaf[face] = it->second;
+                            mosaicOutside[it->second] = thisCellLeaf;
+                            continue;
+                        }
+                        // Owner: emit now, partner patches its cell later.
+                        sharedBoundaryFaceLeaf.emplace(key, static_cast<int>(leafFaces.size()));
                     }
                 }
                 // else: internal hole boundary -> stays a boundary face.
