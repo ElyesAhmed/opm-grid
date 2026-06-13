@@ -1,0 +1,94 @@
+/*
+  Copyright 2026 SINTEF Digital.
+
+  This file is part of the Open Porous Media project (OPM).
+
+  OPM is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  OPM is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with OPM.  If not, see <http://www.gnu.org/licenses/>.
+
+  Verifies that CpGrid::setPartitionCellGroups keeps each group of cells
+  (e.g. an LGR refinement box) on a single rank after load balancing -
+  the partitioning prerequisite for parallel refinement (PLAN Track 1
+  step 6).
+*/
+#include <config.h>
+
+#define BOOST_TEST_MODULE PartitionCellGroupsTest
+#include <boost/test/unit_test.hpp>
+
+#include <opm/grid/CpGrid.hpp>
+
+#include <dune/common/parallel/mpihelper.hh>
+
+#include <array>
+#include <set>
+#include <vector>
+
+struct MPIFixture
+{
+    MPIFixture()
+    {
+        auto& argv = boost::unit_test::framework::master_test_suite().argv;
+        auto& argc = boost::unit_test::framework::master_test_suite().argc;
+        Dune::MPIHelper::instance(argc, argv);
+    }
+};
+BOOST_GLOBAL_FIXTURE(MPIFixture);
+
+#if HAVE_MPI
+BOOST_AUTO_TEST_CASE(boxStaysOnOneRank)
+{
+    Dune::CpGrid grid;
+    const std::array<int, 3> dims = {{10, 10, 4}};
+    const std::array<double, 3> size = {{10.0, 10.0, 4.0}};
+    grid.createCartesian(dims, size);
+
+    if (grid.comm().size() < 2) {
+        return; // nothing to check in serial
+    }
+
+    // A 3x3x2 box of cells that must not be split across ranks.
+    const std::array<int, 3> startIJK = {{4, 4, 1}};
+    const std::array<int, 3> endIJK = {{7, 7, 3}};
+    std::set<int> box;
+    for (int k = startIJK[2]; k < endIJK[2]; ++k) {
+        for (int j = startIJK[1]; j < endIJK[1]; ++j) {
+            for (int i = startIJK[0]; i < endIJK[0]; ++i) {
+                box.insert(i + dims[0]*j + dims[0]*dims[1]*k);
+            }
+        }
+    }
+    grid.setPartitionCellGroups({box});
+
+    // zoltanGoG is the partition method that honors cell groups (and the
+    // one LGR requires).
+    grid.loadBalance(/*overlapLayers=*/1, Dune::PartitionMethod::zoltanGoG);
+
+    // Count, on this rank, how many of the box cells we own (interior).
+    int ownedBoxCells = 0;
+    for (const auto& element : Dune::elements(grid.leafGridView())) {
+        if (element.partitionType() != Dune::InteriorEntity) {
+            continue;
+        }
+        if (box.count(grid.globalCell()[element.index()])) {
+            ++ownedBoxCells;
+        }
+    }
+
+    // Exactly one rank must own all the box cells; every other rank owns none.
+    const int ranksOwningSome = grid.comm().sum(ownedBoxCells > 0 ? 1 : 0);
+    const int totalOwned = grid.comm().sum(ownedBoxCells);
+    BOOST_CHECK_EQUAL(ranksOwningSome, 1);
+    BOOST_CHECK_EQUAL(totalOwned, static_cast<int>(box.size()));
+}
+#endif // HAVE_MPI
