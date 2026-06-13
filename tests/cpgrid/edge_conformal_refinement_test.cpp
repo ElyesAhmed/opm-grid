@@ -39,6 +39,7 @@
 #include <functional>
 #include <memory>
 #include <vector>
+#include <set>
 
 namespace
 {
@@ -265,6 +266,62 @@ BOOST_AUTO_TEST_CASE(edgeConformalToggleInsertsBoundaryNodes)
     // Geometry is unchanged by the post-pass.
     BOOST_CHECK_CLOSE(volOn, volOff, 1e-10);
     BOOST_CHECK_CLOSE(volOn, 3.0*3.0*2.0, 1e-8);
+}
+
+// The global edge-conformal property: after the pass, NO leaf node lies in
+// the interior of ANY face's edge without being listed in that face - no
+// matter which cell defined the node. (Off, hanging nodes exist; on, none.)
+BOOST_AUTO_TEST_CASE(edgeConformalLeavesNoHangingNode)
+{
+    auto depth = [](int, int, int k_) {
+        return static_cast<double>(cellOf(k_) + sideOf(k_));
+    };
+    auto g = makeGrid({3, 3, 2}, depth);
+
+    // Count nodes that lie strictly on some face edge but are not listed in
+    // that face. Edge-conformal <=> this count is zero.
+    const auto countHangingNodes = [&](bool edgeConformal) {
+        Dune::CpGrid grid;
+        auto raw = g.raw();
+        grid.processEclipseFormat(raw, false);
+        BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
+            g.dims, g.coord, g.zcorn, g.actnum, edgeConformal));
+        grid.addLgrsUpdateLeafView({{3,3,3}}, {{1,1,0}}, {{2,2,2}}, {"LGR1"});
+
+        auto& leaf = *grid.currentData().back();
+        const auto& cg = *(Opm::Refinement::GridStateWriter::geometry(leaf)
+                               .geomVector(std::integral_constant<int,3>()));
+        const int nc = cg.size();
+        std::vector<Dune::FieldVector<double,3>> P(nc);
+        for (int i = 0; i < nc; ++i) P[i] = cg.get(i).center();
+
+        auto& f2p = Opm::Refinement::GridStateWriter::faceToPoint(leaf);
+        int hanging = 0;
+        for (int face = 0; face < f2p.size(); ++face) {
+            auto row = f2p[face];
+            const int n = row.size();
+            std::set<int> inFace(row.begin(), row.end());
+            for (int e = 0; e < n; ++e) {
+                const int a = row[e], b = row[(e + 1) % n];
+                auto d = P[b]; d -= P[a];
+                const double len2 = d.two_norm2();
+                if (len2 <= 0) continue;
+                for (int c = 0; c < nc; ++c) {
+                    if (inFace.count(c)) continue;
+                    auto ac = P[c]; ac -= P[a];
+                    const double t = (ac * d) / len2;
+                    if (t <= 1e-9 || t >= 1.0 - 1e-9) continue;
+                    auto proj = d; proj *= t; proj += P[a];
+                    auto diff = P[c]; diff -= proj;
+                    if (diff.two_norm() < 1e-9) ++hanging;
+                }
+            }
+        }
+        return hanging;
+    };
+
+    BOOST_CHECK_GT(countHangingNodes(false), 0); // refinement opens hanging nodes
+    BOOST_CHECK_EQUAL(countHangingNodes(true), 0); // the pass removes them all
 }
 
 // A box boundary that lies on the fault plane is the general faulted-boundary
