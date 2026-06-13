@@ -24,6 +24,7 @@
 
 #include <opm/grid/CpGrid.hpp>
 #include <opm/grid/cpgrid/CpGridData.hpp>
+#include <opm/grid/cpgrid/refinement/EdgeConformal.hpp>
 #include <opm/grid/cpgrid/refinement/LeafGridAssembler.hpp>
 #include <opm/grid/cpgrid/refinement/LevelGridAssembler.hpp>
 
@@ -41,11 +42,13 @@ namespace Refinement
 ConformingBlockBuilder::ConformingBlockBuilder(const std::array<int,3>& parentDims,
                                                std::vector<double> coord,
                                                std::vector<double> zcorn,
-                                               std::vector<int> actnum)
+                                               std::vector<int> actnum,
+                                               bool edgeConformal)
     : dims_(parentDims)
     , coord_(std::move(coord))
     , zcorn_(std::move(zcorn))
     , actnum_(std::move(actnum))
+    , edgeConformal_(edgeConformal)
 {
 }
 
@@ -166,6 +169,9 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
     }
 
     auto leaf = assembleLeafGrid(storage, requests, comm);
+    if (edgeConformal_) {
+        edgeConformalizeLeaf(*leaf);
+    }
     storage.push_back(std::move(leaf));
 }
 

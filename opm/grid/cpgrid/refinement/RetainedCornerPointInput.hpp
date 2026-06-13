@@ -37,6 +37,9 @@ struct RetainedCornerPointInput
     std::vector<double> coord;
     std::vector<double> zcorn;
     std::vector<int> actnum;
+    /// True if level zero was built edge-conformal: the refined leaf is then
+    /// made edge-conformal too (an edge-conformalization post-pass).
+    bool edgeConformal{false};
 };
 
 } // namespace Refinement

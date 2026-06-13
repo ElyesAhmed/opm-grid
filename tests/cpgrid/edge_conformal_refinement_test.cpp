@@ -231,6 +231,42 @@ BOOST_AUTO_TEST_CASE(fourColumnsFaultedAroundAPillarEdgeConformal)
     BOOST_CHECK_CLOSE(totalVolume(grid), v0, 1e-8);
 }
 
+// The edge-conformal toggle: with it on, refinement makes the leaf
+// edge-conformal by inserting the LGR-boundary nodes into the coarse faces
+// that share those edges. Off keeps the current (face-conformal) behaviour.
+// Geometry (volume) is identical either way - only face node lists change.
+BOOST_AUTO_TEST_CASE(edgeConformalToggleInsertsBoundaryNodes)
+{
+    // Flat 3x3x2 grid; refine the central cell (1,1) so its boundary pillars
+    // and lateral edges acquire subdivision nodes that the diagonal coarse
+    // neighbours would otherwise leave hanging.
+    auto depth = [](int, int, int k_) {
+        return static_cast<double>(cellOf(k_) + sideOf(k_));
+    };
+    auto g = makeGrid({3, 3, 2}, depth);
+
+    const auto faceNodesAfterRefine = [&](bool edgeConformal) {
+        Dune::CpGrid grid;
+        auto raw = g.raw();
+        grid.processEclipseFormat(raw, false);
+        BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
+            g.dims, g.coord, g.zcorn, g.actnum, edgeConformal));
+        grid.addLgrsUpdateLeafView({{3,3,3}}, {{1,1,0}}, {{2,2,2}}, {"LGR1"});
+        return std::make_pair(
+            Opm::Refinement::GridStateWriter::faceToPoint(*grid.currentData().back()).dataSize(),
+            totalVolume(grid));
+    };
+
+    const auto [nodesOff, volOff] = faceNodesAfterRefine(false);
+    const auto [nodesOn, volOn] = faceNodesAfterRefine(true);
+
+    // On inserts hanging nodes into coarse faces -> strictly more face nodes.
+    BOOST_CHECK_GT(nodesOn, nodesOff);
+    // Geometry is unchanged by the post-pass.
+    BOOST_CHECK_CLOSE(volOn, volOff, 1e-10);
+    BOOST_CHECK_CLOSE(volOn, 3.0*3.0*2.0, 1e-8);
+}
+
 // A box boundary that lies on the fault plane is the general faulted-boundary
 // restriction (not edge-conformal specific) and must throw clearly.
 BOOST_AUTO_TEST_CASE(refineBoxBoundaryOnFaultThrows)
