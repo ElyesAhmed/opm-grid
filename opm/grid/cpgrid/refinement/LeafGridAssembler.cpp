@@ -195,6 +195,19 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
         leafCornerHistory[corner] = {0, corner};
     }
 
+    // Refined corners shared between touching boxes (edge/corner-sharing)
+    // coincide bitwise: both boxes resample the same parent description with
+    // equal subdivisions, so the arithmetic is identical. Exact-coordinate
+    // matching is therefore correct (not a fragile floating-point heuristic)
+    // and merges those corners into one pool entry. Disjoint boxes only
+    // coincide on shared boundaries, so a global map over refined corners is
+    // safe.
+    std::map<std::array<double,3>, int> refinedCornerPool;
+    const auto coordKey = [](const Dune::cpgrid::Geometry<0,3>& corner) {
+        const auto& c = corner.center();
+        return std::array<double,3>{ c[0], c[1], c[2] };
+    };
+
     for (int b = 0; b < numBoxes; ++b) {
         BoxData& box = boxes[b];
         const Dune::cpgrid::EntityVariableBase<Dune::cpgrid::Geometry<0,3>>& cornersL =
@@ -207,9 +220,21 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
                 levelCornerHistory[corner] = {0, box.cornerEquiv[corner]};
             }
             else {
-                box.cornerToLeaf[corner] = static_cast<int>(leafCorners.size());
-                leafCorners.push_back(cornersL[corner]);
-                leafCornerHistory.push_back({b + 1, corner});
+                const auto key = coordKey(cornersL[corner]);
+                const auto existing = refinedCornerPool.find(key);
+                if (existing != refinedCornerPool.end()) {
+                    // Shared with an already-processed box: reuse, and keep
+                    // the corner's birth identity from that earlier box.
+                    box.cornerToLeaf[corner] = existing->second;
+                    levelCornerHistory[corner] = leafCornerHistory[existing->second];
+                }
+                else {
+                    const int leafCorner = static_cast<int>(leafCorners.size());
+                    box.cornerToLeaf[corner] = leafCorner;
+                    leafCorners.push_back(cornersL[corner]);
+                    leafCornerHistory.push_back({b + 1, corner});
+                    refinedCornerPool.emplace(key, leafCorner);
+                }
             }
         }
         GridStateWriter::setCornerHistory(*box.level, std::move(levelCornerHistory));
