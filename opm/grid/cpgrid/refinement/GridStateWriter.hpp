@@ -90,6 +90,13 @@ struct GridStateWriter
     static void setRetainedCornerPointInput(Data& grid,
                                             std::shared_ptr<const RetainedCornerPointInput> input);
     static std::shared_ptr<const RetainedCornerPointInput> retainedCornerPointInput(const Data& grid);
+
+    /// Per-cell partition types (PartitionTypeIndicator::cell_indicator_).
+    /// Empty means "not parallel; all interior". Used to give the leaf its
+    /// partition types (coarse cells from level zero, refined cells from
+    /// their parent) on a distributed grid.
+    static const std::vector<char>& cellPartitionTypes(const Data& grid);
+    static void setCellPartitionTypes(Data& grid, std::vector<char> types);
 };
 
 } // namespace Refinement

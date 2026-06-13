@@ -113,14 +113,13 @@ BOOST_GLOBAL_FIXTURE(MPIFixture);
 // remaining blocker (it currently faults reading the distributed level-zero
 // overlap structure), so this case is disabled pending that fix; the
 // rank-interior enforcement is covered by boxTouchingOverlapThrows below.
-BOOST_AUTO_TEST_CASE(rankInteriorBoxRefinedInParallel,
-                     * boost::unit_test::disabled())
+BOOST_AUTO_TEST_CASE(rankInteriorBoxRefinedInParallel)
 {
     const std::array<int,3> dims = {{12, 12, 4}};
     auto g = makeUnitGrid(dims);
 
     Dune::CpGrid grid;
-    grid.createCartesian(dims, {{double(dims[0]), double(dims[1]), double(dims[2])}});
+    grid.createCartesian(dims, {{1.0, 1.0, 1.0}}); // unit cells, matching makeUnitGrid
     if (grid.comm().size() < 2) {
         return;
     }
@@ -163,7 +162,7 @@ BOOST_AUTO_TEST_CASE(boxTouchingOverlapThrows)
     auto g = makeUnitGrid(dims);
 
     Dune::CpGrid grid;
-    grid.createCartesian(dims, {{double(dims[0]), double(dims[1]), double(dims[2])}});
+    grid.createCartesian(dims, {{1.0, 1.0, 1.0}}); // unit cells, matching makeUnitGrid
 
     const int np = grid.comm().size();
     if (np != 2) {
