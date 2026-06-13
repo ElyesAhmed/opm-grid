@@ -630,6 +630,26 @@ namespace Dune
 
         void setPartitioningParams(const std::map<std::string,std::string>& params);
 
+        /// \brief Groups of cells that load balancing must keep on one rank.
+        ///
+        /// Each group is a set of global (Cartesian) cell indices. The
+        /// graph partitioner contracts every group into a single vertex
+        /// (the same mechanism used for well cells), so the group is never
+        /// split across processes. Set before loadBalance(). Intended for
+        /// LGR refinement boxes: keeping a box on one rank means the
+        /// refinement builder never has to split a box across ranks
+        /// (docs/PLAN.md Track 1 step 6).
+        void setPartitionCellGroups(std::vector<std::set<int>> cellGroups)
+        {
+            partition_cell_groups_ = std::move(cellGroups);
+        }
+
+        /// \brief The cell groups load balancing must keep together (Cartesian ids).
+        const std::vector<std::set<int>>& partitionCellGroups() const
+        {
+            return partition_cell_groups_;
+        }
+
         // loadbalance is not part of the grid interface therefore we skip it.
 
         /// \brief Distributes this grid over the available nodes in a distributed machine
@@ -1432,6 +1452,11 @@ namespace Dune
          * @brief Partitioning parameters
          */
         std::map<std::string,std::string> partitioningParams;
+
+        /**
+         * @brief Cell groups (Cartesian ids) the partitioner must keep on one rank.
+         */
+        std::vector<std::set<int>> partition_cell_groups_;
 
     }; // end Class CpGrid
 
