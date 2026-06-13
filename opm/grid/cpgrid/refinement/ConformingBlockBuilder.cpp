@@ -49,12 +49,58 @@ ConformingBlockBuilder::ConformingBlockBuilder(const std::array<int,3>& parentDi
 {
 }
 
+namespace
+{
+
+// Per-box presence on this rank (distributed runs). The rank-interior model
+// (PLAN Track 1 step 6): a box is either fully owned here (all its cells
+// local and interior) or absent (no cell local, not even as overlap).
+// Anything in between means the box crosses a rank boundary / touches the
+// overlap, which is not supported.
+enum class BoxPresence { Owned, Absent };
+
+BoxPresence classifyBox(const Dune::cpgrid::CpGridData& level0,
+                        const std::array<int,3>& dims,
+                        const Opm::Refinement::BlockRefinement& req)
+{
+    const int boxCells = (req.endIJK[0] - req.startIJK[0])
+                       * (req.endIJK[1] - req.startIJK[1])
+                       * (req.endIJK[2] - req.startIJK[2]);
+    int interior = 0;
+    int nonInterior = 0;
+    const auto& globalCell = level0.globalCell();
+    for (int c = 0; c < level0.size(0); ++c) {
+        const int cart = globalCell[c];
+        const int i = cart % dims[0];
+        const int j = (cart / dims[0]) % dims[1];
+        const int k = cart / (dims[0]*dims[1]);
+        if (i >= req.startIJK[0] && i < req.endIJK[0]
+            && j >= req.startIJK[1] && j < req.endIJK[1]
+            && k >= req.startIJK[2] && k < req.endIJK[2]) {
+            const Dune::cpgrid::Entity<0> e(level0, c, true);
+            if (e.partitionType() == Dune::InteriorEntity) {
+                ++interior;
+            } else {
+                ++nonInterior;
+            }
+        }
+    }
+    if (interior == 0 && nonInterior == 0) {
+        return BoxPresence::Absent;
+    }
+    if (interior == boxCells && nonInterior == 0) {
+        return BoxPresence::Owned;
+    }
+    throw std::logic_error("Refinement box '" + req.name + "' is split across MPI ranks or "
+                           "touches the overlap region. Only rank-interior LGRs are supported; "
+                           "use CpGrid::setPartitionCellGroups to keep the box on one rank.");
+}
+
+} // anonymous namespace
+
 void ConformingBlockBuilder::build(Dune::CpGrid& grid,
                                    const std::vector<BlockRefinement>& requests)
 {
-    if (grid.comm().size() > 1) {
-        throw std::logic_error("ConformingBlockBuilder supports serial runs only, yet.");
-    }
     if (grid.maxLevel() != 0) {
         throw std::logic_error("ConformingBlockBuilder requires an unrefined starting grid.");
     }
@@ -101,13 +147,21 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
 
     auto& storage = grid.currentData();
     const auto comm = Dune::MPIHelper::getCommunicator();
+    const bool distributed = grid.comm().size() > 1;
 
     for (std::size_t b = 0; b < requests.size(); ++b) {
-        auto level = assembleBlockLevelGrid(*storage[0], dims_,
-                                            coord_.data(), zcorn_.data(),
-                                            actnum_.empty() ? nullptr : actnum_.data(),
-                                            requests[b], static_cast<int>(b) + 1,
-                                            storage, comm);
+        // In a distributed run, only the rank that owns the (rank-interior)
+        // box refines it; other ranks carry an empty placeholder level grid.
+        const auto presence = distributed
+            ? classifyBox(*storage[0], dims_, requests[b])
+            : BoxPresence::Owned;
+        auto level = (presence == BoxPresence::Owned)
+            ? assembleBlockLevelGrid(*storage[0], dims_,
+                                     coord_.data(), zcorn_.data(),
+                                     actnum_.empty() ? nullptr : actnum_.data(),
+                                     requests[b], static_cast<int>(b) + 1,
+                                     storage, comm)
+            : assembleEmptyLevelGrid(requests[b], static_cast<int>(b) + 1, storage, comm);
         storage.push_back(std::move(level));
     }
 

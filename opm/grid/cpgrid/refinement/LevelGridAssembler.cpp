@@ -54,7 +54,13 @@ assembleBlockLevelGrid(const Dune::cpgrid::CpGridData& level0,
 
     // Stage 4: process the refined description with the corner-point
     // preprocessor. Faults/pinch-outs inside the block are matched here.
-    auto level = std::make_shared<Dune::cpgrid::CpGridData>(comm, levelStorage);
+    // Refined level grids are rank-local (rank-interior LGR model): use a
+    // self-communicator so none of their operations are collective over the
+    // distributed communicator (avoids deadlock when only the owning rank
+    // refines). The distributed leaf keeps the real communicator.
+    (void)comm;
+    auto level = std::make_shared<Dune::cpgrid::CpGridData>(
+        Dune::MPIHelper::getLocalCommunicator(), levelStorage);
     grdecl raw;
     raw.dims[0] = refined.dims[0];
     raw.dims[1] = refined.dims[1];
@@ -117,6 +123,28 @@ assembleBlockLevelGrid(const Dune::cpgrid::CpGridData& level0,
     GridStateWriter::setCellsPerDim(*level, request.cellsPerDim);
     GridStateWriter::setParentRelations(*level, std::move(childToParent), std::move(idxInParent));
 
+    return level;
+}
+
+std::shared_ptr<Dune::cpgrid::CpGridData>
+assembleEmptyLevelGrid(const BlockRefinement& request,
+                       int levelIndex,
+                       std::vector<std::shared_ptr<Dune::cpgrid::CpGridData>>& levelStorage,
+                       Dune::MPIHelper::MPICommunicator comm)
+{
+    (void)comm;
+    auto level = std::make_shared<Dune::cpgrid::CpGridData>(
+        Dune::MPIHelper::getLocalCommunicator(), levelStorage);
+    const std::array<int,3> refinedDims = {
+        (request.endIJK[0] - request.startIJK[0]) * request.cellsPerDim[0],
+        (request.endIJK[1] - request.startIJK[1]) * request.cellsPerDim[1],
+        (request.endIJK[2] - request.startIJK[2]) * request.cellsPerDim[2] };
+    GridStateWriter::setLevel(*level, levelIndex);
+    GridStateWriter::setCellsPerDim(*level, request.cellsPerDim);
+    GridStateWriter::setLogicalCartesianSize(*level, refinedDims);
+    GridStateWriter::setGlobalCell(*level, {});
+    GridStateWriter::setIndexSet(*level, 0, 0);
+    GridStateWriter::setParentRelations(*level, {}, {});
     return level;
 }
 
