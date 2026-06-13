@@ -36,6 +36,7 @@
 */
 #ifdef HAVE_CONFIG_H
 #include "config.h"
+#include <cstdio>
 #endif
 
 
@@ -1616,13 +1617,53 @@ void CpGrid::addLgrsUpdateLeafView(const std::vector<std::array<int,3>>& cells_p
     }
     Opm::Refinement::validateBlockRefinements(requests);
 
+    // In a distributed run the retained corner-point input exists only on
+    // rank 0 (on the undistributed grid data_[0]); the scattered level zero
+    // does not carry it, and non-root ranks have an empty data_. Broadcast it
+    // so every rank's builder can resample the global box geometry.
+    if (comm().size() > 1
+        && !Opm::Refinement::GridStateWriter::retainedCornerPointInput(*currentData()[0])) {
+        auto input = std::make_shared<Opm::Refinement::RetainedCornerPointInput>();
+        int present = 0;
+        if (comm().rank() == 0 && !data_.empty()) {
+            if (auto src = Opm::Refinement::GridStateWriter::retainedCornerPointInput(*data_[0])) {
+                *input = *src;
+                present = 1;
+            }
+        }
+        comm().broadcast(&present, 1, 0);
+        if (present) {
+            comm().broadcast(input->dims.data(), 3, 0);
+            int ec = input->edgeConformal ? 1 : 0;
+            comm().broadcast(&ec, 1, 0);
+            input->edgeConformal = (ec != 0);
+            std::array<int,3> sizes{ static_cast<int>(input->coord.size()),
+                                     static_cast<int>(input->zcorn.size()),
+                                     static_cast<int>(input->actnum.size()) };
+            comm().broadcast(sizes.data(), 3, 0);
+            if (comm().rank() != 0) {
+                input->coord.resize(sizes[0]);
+                input->zcorn.resize(sizes[1]);
+                input->actnum.resize(sizes[2]);
+            }
+            if (sizes[0]) comm().broadcast(input->coord.data(), sizes[0], 0);
+            if (sizes[1]) comm().broadcast(input->zcorn.data(), sizes[1], 0);
+            if (sizes[2]) comm().broadcast(input->actnum.data(), sizes[2], 0);
+            Opm::Refinement::GridStateWriter::setRetainedCornerPointInput(*currentData()[0], input);
+        }
+    }
+
     auto* refinementBuilder = Opm::Refinement::builder();
     std::unique_ptr<Opm::Refinement::Builder> deckBuilder;
     if (!refinementBuilder) {
-        // No explicitly registered builder: when the deck requested LGRs,
-        // the corner-point description was retained at construction time
-        // and the default conforming builder can be used directly.
-        if (auto retained = Opm::Refinement::GridStateWriter::retainedCornerPointInput(*currentData()[0])) {
+        // No explicitly registered builder: the corner-point description was
+        // retained at construction (and broadcast above in parallel) and the
+        // default conforming builder is used directly.
+        auto retained = Opm::Refinement::GridStateWriter::retainedCornerPointInput(*currentData()[0]);
+        if (!retained && !data_.empty()) {
+            retained = Opm::Refinement::GridStateWriter::retainedCornerPointInput(*data_[0]);
+        }
+        if (retained) {
             deckBuilder = std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
                 retained->dims, retained->coord, retained->zcorn, retained->actnum,
                 retained->edgeConformal);
@@ -1635,7 +1676,6 @@ void CpGrid::addLgrsUpdateLeafView(const std::vector<std::array<int,3>>& cells_p
     const int preBuildMaxLevel = maxLevel();
     refinementBuilder->build(*this, requests);
 
-    // Register the new level grids: names and the id-set facade.
     for (std::size_t box = 0; box < numBoxes; ++box) {
         lgr_names_[requests[box].name] = preBuildMaxLevel + static_cast<int>(box) + 1;
     }
