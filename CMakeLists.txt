@@ -82,6 +82,7 @@ macro(opm-grid_tests_hook)
       distribution_test
       test_communication_utils
       partition_cell_groups_test
+      distributed_builder_test
     )
     if(USE_OPM_COMMON)
       list(APPEND tests_4proc

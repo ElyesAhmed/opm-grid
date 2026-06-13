@@ -72,6 +72,17 @@ assembleBlockLevelGrid(const Dune::cpgrid::CpGridData& level0,
                        std::vector<std::shared_ptr<Dune::cpgrid::CpGridData>>& levelStorage,
                        Dune::MPIHelper::MPICommunicator comm);
 
+/// An empty (zero-cell) refined level grid for a box that has no cells on
+/// this rank (distributed runs, rank-interior LGRs). All ranks must carry
+/// the same number of level grids, so absent boxes still need a placeholder
+/// with consistent level index, subdivision factors and logical Cartesian
+/// size.
+std::shared_ptr<Dune::cpgrid::CpGridData>
+assembleEmptyLevelGrid(const BlockRefinement& request,
+                       int levelIndex,
+                       std::vector<std::shared_ptr<Dune::cpgrid::CpGridData>>& levelStorage,
+                       Dune::MPIHelper::MPICommunicator comm);
+
 } // namespace Refinement
 } // namespace Opm
 
