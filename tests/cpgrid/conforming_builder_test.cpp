@@ -276,6 +276,99 @@ BOOST_AUTO_TEST_CASE(twoSeparatedBoxesAndGuards)
     BOOST_CHECK_EQUAL(cellIds.size(), static_cast<std::size_t>(grid.size(0)));
 }
 
+// Two diagonally-adjacent boxes share only an edge (the CARFIN deck
+// configuration). The refined corners along the shared edge that are
+// interior to a parent cell must merge into single leaf vertices.
+BOOST_AUTO_TEST_CASE(edgeSharingBoxesMergeCorners)
+{
+    auto parent = makeVerticalPillarGrid({4, 4, 2}, [](int, int, int k_) {
+        return 2.0*(cellOf(k_) + sideOf(k_));
+    });
+
+    Dune::CpGrid grid;
+    auto rawParent = parent.raw();
+    grid.processEclipseFormat(rawParent, false);
+    const double volumeBefore = totalVolume(grid);
+
+    BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
+        parent.dims, parent.coord, parent.zcorn, parent.actnum));
+
+    // Box A = i,j in [0,2); box B = i,j in [2,4); both k in [0,2).
+    // They meet along the vertical edge (i=2, j=2). Factors 2x2x2.
+    grid.addLgrsUpdateLeafView({{2,2,2}, {2,2,2}},
+                               {{0,0,0}, {2,2,0}},
+                               {{2,2,2}, {4,4,2}},
+                               {"A", "B"});
+
+    BOOST_REQUIRE_EQUAL(grid.maxLevel(), 2);
+    BOOST_CHECK_CLOSE(totalVolume(grid), volumeBefore, 1e-8);
+    // 32 - 2*8 parents + 2*64 children
+    BOOST_CHECK_EQUAL(grid.size(0), 32 - 2*8 + 2*64);
+
+    // No two distinct leaf vertices may sit at the same coordinate: the
+    // shared-edge interior corners must have merged.
+    std::set<std::array<double,3>> coords;
+    int vertexCount = 0;
+    for (const auto& vertex : Dune::vertices(grid.leafGridView())) {
+        const auto& c = vertex.geometry().center();
+        coords.insert({c[0], c[1], c[2]});
+        ++vertexCount;
+    }
+    BOOST_CHECK_EQUAL(coords.size(), static_cast<std::size_t>(vertexCount));
+    BOOST_CHECK_EQUAL(vertexCount, grid.size(3));
+
+    // Two-sided intersection symmetry over the whole leaf.
+    std::map<std::pair<int,int>, int> pairCount;
+    for (const auto& element : Dune::elements(grid.leafGridView())) {
+        for (const auto& intersection : Dune::intersections(grid.leafGridView(), element)) {
+            if (intersection.neighbor()) {
+                const int in = intersection.inside().index();
+                const int out = intersection.outside().index();
+                pairCount[{std::min(in, out), std::max(in, out)}] += 1;
+            }
+        }
+    }
+    for (const auto& [cells, count] : pairCount) {
+        BOOST_CHECK_EQUAL(count, 2);
+    }
+
+    // Unique global ids for cells and points.
+    const auto& ids = grid.globalIdSet();
+    std::set<std::int64_t> cellIds, pointIds;
+    for (const auto& element : Dune::elements(grid.leafGridView())) {
+        cellIds.insert(ids.id(element));
+    }
+    for (const auto& vertex : Dune::vertices(grid.leafGridView())) {
+        pointIds.insert(ids.id(vertex));
+    }
+    BOOST_CHECK_EQUAL(cellIds.size(), static_cast<std::size_t>(grid.size(0)));
+    BOOST_CHECK_EQUAL(pointIds.size(), static_cast<std::size_t>(grid.size(3)));
+}
+
+// Face-sharing boxes are rejected (mosaic-mosaic pairing not implemented).
+BOOST_AUTO_TEST_CASE(faceSharingBoxesThrow)
+{
+    auto parent = makeVerticalPillarGrid({4, 2, 2}, [](int, int, int k_) {
+        return 2.0*(cellOf(k_) + sideOf(k_));
+    });
+
+    Dune::CpGrid grid;
+    auto rawParent = parent.raw();
+    grid.processEclipseFormat(rawParent, false);
+
+    BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
+        parent.dims, parent.coord, parent.zcorn, parent.actnum));
+
+    // Box A = i in [0,2), box B = i in [2,4); both full in j,k -> share the
+    // i=2 face.
+    BOOST_CHECK_THROW(grid.addLgrsUpdateLeafView({{2,2,2}, {2,2,2}},
+                                                 {{0,0,0}, {2,0,0}},
+                                                 {{2,2,2}, {4,2,2}},
+                                                 {"A", "B"}),
+                      std::logic_error);
+    BOOST_CHECK_EQUAL(grid.maxLevel(), 0);
+}
+
 BOOST_AUTO_TEST_CASE(faultInsideBoxEndToEnd)
 {
     // Fault between i=1 and i=2 columns, throw 0.6; box covers it.
