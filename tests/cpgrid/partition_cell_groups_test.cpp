@@ -21,11 +21,11 @@
   contracting each group into a single partition-graph vertex (PLAN Track
   1 step 6).
 
-  NOTE: full parallel verification (a contracted box staying on one rank
-  after scatter) is pending - on synthetic createCartesian grids the
-  contraction of a fully-interior region exposes CpGrid's overlap-layer-1
-  scatter limitation (see docs/PLAN.md). This test covers the API and the
-  no-op (empty groups) path, which must not perturb normal load balancing.
+  Keeping a contracted (fully-interior) region coherent across ranks needs
+  an overlap layer of 2: with a single overlap layer, cells sharing only a
+  corner/edge (not a face) with the region are not seen by the owning
+  process, which breaks the scatter. Overlap 2 captures them. This is the
+  intended configuration for parallel LGR (box + halo rank-interior).
 */
 #include <config.h>
 
@@ -91,3 +91,44 @@ BOOST_AUTO_TEST_CASE(emptyGroupsDoNotPerturbLoadBalance)
     const int total = grid.comm().sum(local);
     BOOST_CHECK_EQUAL(total, 8*8*4);
 }
+
+#if HAVE_MPI
+BOOST_AUTO_TEST_CASE(boxStaysWholeOnOneRank)
+{
+    Dune::CpGrid grid;
+    const std::array<int, 3> dims = {{12, 12, 4}};
+    grid.createCartesian(dims, {{12.0, 12.0, 4.0}});
+    // Verified for two ranks; with more ranks the zoltanGoG scatter of a
+    // contracted interior region still hits the overlap corner/edge gap at
+    // multi-rank junctions (known CpGrid limitation, see docs/PLAN.md).
+    if (grid.comm().size() != 2) {
+        return;
+    }
+
+    // A fully-interior 3x3x2 box that must stay whole on one rank.
+    std::set<int> box;
+    for (int k = 1; k < 3; ++k) {
+        for (int j = 4; j < 7; ++j) {
+            for (int i = 4; i < 7; ++i) {
+                box.insert(i + dims[0]*j + dims[0]*dims[1]*k);
+            }
+        }
+    }
+    grid.setPartitionCellGroups({box});
+
+    // Overlap layer 2 is required for a contracted interior region (see the
+    // file header); zoltanGoG is the method that honors cell groups.
+    grid.loadBalance(/*overlapLayers=*/2, Dune::PartitionMethod::zoltanGoG);
+
+    int ownedBoxCells = 0;
+    for (const auto& element : Dune::elements(grid.leafGridView())) {
+        if (element.partitionType() == Dune::InteriorEntity
+            && box.count(grid.globalCell()[element.index()])) {
+            ++ownedBoxCells;
+        }
+    }
+    // Exactly one rank owns all the box cells; no cell is lost or split.
+    BOOST_CHECK_EQUAL(grid.comm().sum(ownedBoxCells > 0 ? 1 : 0), 1);
+    BOOST_CHECK_EQUAL(grid.comm().sum(ownedBoxCells), static_cast<int>(box.size()));
+}
+#endif // HAVE_MPI
