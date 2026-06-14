@@ -106,6 +106,47 @@ VEM. Note: the refined level grids themselves remain `edge_conformal=false`
 internally — the leaf post-pass makes the *assembled* leaf conformal, which
 is what consumers see.
 
+## Track 2 — construction-stable ids (D3) and parallel-LGR output
+
+Status of parallel LGR (2026-06): the rank-interior model works and is correct
+where it overlaps upstream — Cartesian and non-faulted corner-point decks agree
+with master to 1e-6, serial and parallel (see `scripts/lgr_regression.sh`). Two
+gaps remain, with a shared root, and one explicit non-goal.
+
+**Key correctness note — do not "fix" the solve path.** In the rank-interior
+model a refined cell is interior-only and never appears in another rank's
+overlap, so the per-rank-disjoint parallel `cell_index_set_` ids
+(`LeafGridAssembler.cpp`, the `refinedNext` block) only need *local* uniqueness
+and are correct for the solve. D3 is **not** about that `int32` parallel index.
+
+**D3 — construction-stable global id (the keystone).** Give each refined leaf
+cell an id derivable from the input alone, so it is identical regardless of
+which rank (or run) built it: `encode(parent stable id, child index)`. The
+inputs already exist at leaf assembly time — `leafChildToParent` (parent
+level-0 cell → stable `globalCell()` Cartesian) and `leafIdxInParent` (child
+index within the parent). The Dune entity `IdType` is `int64_t`, so the packed
+id has room. This is what the output gather keys on; it is also the prerequisite
+for any future distributed refinement (matching a box's overlap cells across
+ranks) and for a forest/octree core.
+
+**Output collection (the immediate payoff).** `CollectDataOnIORank` currently
+bails for parallel + LGR (index maps left empty; we degrade to no gathered
+cell output — VTK is the interim cell output, which works in parallel). To
+restore summary-correct, cell-correct output: refine the IO/equil grid
+consistently (today it stays coarse, 300 cells) and gather distributed refined
+cells into the per-LGR-section output order keyed on the D3 id (Cartesian keys
+collide for refined siblings). Well **summary** rates are already correct in
+parallel; this is about the gridded restart/INIT cell arrays. Acceptance: the
+`compare_lgr_output.py` INIT/restart element-wise check passes parallel-vs-serial.
+
+**Distributed refinement — only if cheap; otherwise out of scope.** Letting a
+box span ranks (each rank refines its part) would close the whole-grid-LGR gap
+(`CARFIN_GR` in parallel, which master does and we now reject cleanly). Decision
+(2026-06): keep the rank-interior model; the partition is adjustable
+(`setPartitionCellGroups`), which is sufficient for most decks. Pursue
+distributed refinement only if it falls out of D3 without much added
+complexity. D3 + output do **not** depend on it.
+
 ## Acceptance gate — deck matrix (Part II)
 
 CI matrix from day one: unfaulted Cartesian / faulted / pinched / NNC / aquifer × serial / parallel × wells in/out of LGR; ECLIPSE reference output where available. Each milestone and Track 0 item is "done" when its rows pass.
