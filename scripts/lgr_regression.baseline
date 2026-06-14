@@ -11,11 +11,16 @@
 # Current state (2026-06-14):
 #   * Cartesian LGR (CARFIN, CARFIN1): bit-compatible with master and
 #     parallel-consistent to 1e-6. These are the guard-rails.
-#   * Corner-point (2D/3D) and FLEX: refinement diverges from master (FAIL);
-#     mostly still parallel-self-consistent. Known gap in the fork's
-#     corner-point refinement -- to be closed.
+#   * Corner-point (2D/3D) and FLEX: FAIL vs master, but this is the fork being
+#     *correct* -- on non-faulted corner-point the fork's refinement conserves
+#     the parent cell's centre of mass (to ~1e-8) while master's index-space
+#     subdivision of skewed cells drifts ~1e-4. So these are NOT to be "fixed"
+#     by matching master; the ground-truth check is the volume/centre-of-mass
+#     conservation unit test (tests/cpgrid/grdecl_refinement_test.cpp,
+#     slantedPillarRefinementConservesCenterOfMass). They stay parallel-self-
+#     consistent, which is the property the harness should guard for them.
 #   * CARFIN_GR (wells inside the LGR): diverges from master; parallel run
-#     currently fails.
+#     currently fails -- a genuine open item (wells-in-LGR path).
 #   * 3DCORNERPOINT_XYZ-NON and CARFIN_FAULTS: do not run (the latter fails
 #     in opm-common FAULTS parsing, unrelated to the grid).
 #
