@@ -23,9 +23,13 @@
 #     agree. Stabilising the controller is a separate task; more accurate linear
 #     solves (e.g. --linear-solver-reduction=1e-6) make ser and par take the
 #     identical Newton path, but not uniformly across decks.
-#   * CARFIN_GR (wells INSIDE the LGR): fork==master serial agrees (Lnz), but the
-#     PARALLEL run aborts (SIGABRT). This is the one genuine open bug -- the
-#     wells-in-LGR (compressedIndexForInteriorLGR) path in parallel.
+#   * CARFIN_GR: its LGR1 spans the FULL 10x10x3 grid, so the rank-interior
+#     model cannot keep the box on one rank without leaving another empty. Serial
+#     agrees with master (Lnz); the parallel run now fails *cleanly* with an
+#     actionable error (CpGridVanguard guard) instead of the previous SIGABRT.
+#     Running such a whole-grid LGR in parallel would need distributed refinement
+#     (a box split across ranks), which the fork does not implement; master does.
+#     ser==par stays "-" (parallel intentionally does not complete).
 #   * 3DCORNERPOINT_XYZ-NON and CARFIN_FAULTS: do not run (the latter fails in
 #     opm-common FAULTS parsing, unrelated to the grid; faulted corner-point LGR
 #     is suspect in master anyway).
