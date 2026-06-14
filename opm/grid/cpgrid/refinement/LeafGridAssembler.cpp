@@ -596,21 +596,69 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
                                                          leafCellToPoint[cell].data());
     }
 
-    // Leaf partition types (distributed grids only): a coarse leaf cell
-    // keeps its level-zero type; a refined leaf cell inherits its parent's
-    // type (interior, since boxes are rank-interior). Without this the leaf
-    // partition_type_indicator_ is empty and every cell reports Interior.
-    const auto& level0Types = GridStateWriter::cellPartitionTypes(level0);
-    if (!level0Types.empty()) {
-        std::vector<char> leafTypes(numLeafCells);
-        for (int cell = 0; cell < numLeafCells; ++cell) {
-            const int parent0 = (leafChildToParent[cell][0] == -1)
-                ? leafToLevel[cell][1]      // coarse: it is the level-zero cell
-                : leafChildToParent[cell][1]; // refined: its level-zero parent
-            leafTypes[cell] = level0Types[parent0];
+    // ----- Parallel leaf structures (distributed grids only) -------------------
+    // Build the leaf's parallel cell index set, remote indices, partition types,
+    // and communication interfaces so that overlap leaf cells take part in
+    // collective communication (e.g. opm-models' dofTotalVolume border sync,
+    // which sums interior volumes and then communicates them to the overlap).
+    // Coarse leaf cells inherit their level-zero global index and attribute;
+    // refined cells are rank-interior (owner only) and get fresh, globally
+    // unique indices in a per-rank range above every coarse global id, so the
+    // remote-index matching never pairs them with a cell on another rank.
+#if HAVE_MPI
+    Dune::Communication<Dune::MPIHelper::MPICommunicator> cc(comm);
+    if (cc.size() > 1) {
+        using ParallelIndexSet = CpGridData::ParallelIndexSet;
+        using AttributeSet = CpGridData::AttributeSet;
+
+        std::vector<int> leafCellGlobalId(numLeafCells, -1);
+        std::vector<AttributeSet> leafCellAttr(numLeafCells, AttributeSet::owner);
+
+        int localMaxCoarseGlobal = 0;
+        for (const auto& entry : level0.cellIndexSet()) {
+            const int l0local = entry.local().local();
+            localMaxCoarseGlobal = std::max(localMaxCoarseGlobal, static_cast<int>(entry.global()));
+            const int leafC = leafIdxOfCell0[l0local];   // -1 if refined away
+            if (leafC >= 0) {
+                leafCellGlobalId[leafC] = entry.global();
+                leafCellAttr[leafC] = entry.local().attribute();
+            }
         }
-        GridStateWriter::setCellPartitionTypes(*leaf, std::move(leafTypes));
+
+        // Fresh global ids for refined (interior-only) cells in a per-rank
+        // disjoint range above every coarse global id on any rank.
+        int numRefinedLocal = 0;
+        for (int cell = 0; cell < numLeafCells; ++cell) {
+            if (leafCells[cell].grid != 0) ++numRefinedLocal;
+        }
+        const int globalMaxCoarse = cc.max(localMaxCoarseGlobal);
+        std::vector<int> refinedCounts(cc.size(), 0);
+        cc.allgather(&numRefinedLocal, 1, refinedCounts.data());
+        int refinedNext = globalMaxCoarse + 1;
+        for (int r = 0; r < cc.rank(); ++r) {
+            refinedNext += refinedCounts[r];
+        }
+        for (int cell = 0; cell < numLeafCells; ++cell) {
+            if (leafCells[cell].grid != 0) {
+                leafCellGlobalId[cell] = refinedNext++;
+                leafCellAttr[cell] = AttributeSet::owner;
+            }
+        }
+
+        auto& cis = leaf->cellIndexSet();
+        cis.beginResize();
+        for (int cell = 0; cell < numLeafCells; ++cell) {
+            cis.add(leafCellGlobalId[cell],
+                    ParallelIndexSet::LocalIndex(cell, leafCellAttr[cell], true));
+        }
+        cis.endResize();
+
+        leaf->cellRemoteIndices().template rebuild<false>();
+        leaf->computeCellPartitionType();
+        leaf->computePointPartitionType();
+        leaf->computeCommunicationInterfaces(numLeafCorners);
     }
+#endif
 
     // ----- Leaf metadata -------------------------------------------------------
     GridStateWriter::setLogicalCartesianSize(*leaf, dims0);
