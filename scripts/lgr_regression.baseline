@@ -1,34 +1,40 @@
 # LGR regression baseline: fork (builds/refined) vs upstream master (builds/release).
 # Columns: <deck>  <fork==master tol>  <fork-serial==fork-parallel tol>
-# Values: 1e-6..1e-1 = tightest matching relative tolerance; FAIL = no match;
-#         "-" = a run did not complete (see status below), so no comparison.
+# Values: 1e-6..1e-1 = tightest matching relative tolerance; Lnz = summaries
+#         differ only in length (ministep count) but the field rates agree, i.e.
+#         timestep-path noise rather than a solution change; FAIL = field rates
+#         genuinely diverge; "-" = a run did not complete.
 #
-# lgr_regression.sh exits non-zero if any cell here regresses (a passing
-# tolerance gets looser or turns to FAIL). Tighten entries here as the fork's
-# refinement is brought into agreement with master; run with -u to catch
-# unexpected improvements that should be recorded.
+# lgr_regression.sh exits non-zero if any cell here regresses. Lnz ranks just
+# above FAIL (it is not a regression). Both flow binaries share opm-simulators,
+# so the master binary carries the same simulator-side fixes (e.g. the LGR
+# well-cell mapping rebuild) -- this isolates the *grid* difference.
 #
-# Current state (2026-06-14):
-#   * Cartesian LGR (CARFIN, CARFIN1): bit-compatible with master and
-#     parallel-consistent to 1e-6. These are the guard-rails.
-#   * Corner-point (2D/3D) and FLEX: FAIL vs master, but this is the fork being
-#     *correct* -- on non-faulted corner-point the fork's refinement conserves
-#     the parent cell's centre of mass (to ~1e-8) while master's index-space
-#     subdivision of skewed cells drifts ~1e-4. So these are NOT to be "fixed"
-#     by matching master; the ground-truth check is the volume/centre-of-mass
-#     conservation unit test (tests/cpgrid/grdecl_refinement_test.cpp,
-#     slantedPillarRefinementConservesCenterOfMass). They stay parallel-self-
-#     consistent, which is the property the harness should guard for them.
-#   * CARFIN_GR (wells inside the LGR): diverges from master; parallel run
-#     currently fails -- a genuine open item (wells-in-LGR path).
-#   * 3DCORNERPOINT_XYZ-NON and CARFIN_FAULTS: do not run (the latter fails
-#     in opm-common FAULTS parsing, unrelated to the grid).
+# Current state (2026-06-14, after the LGR well-cell-mapping fix):
+#   * Cartesian LGR (CARFIN, CARFIN1) and corner-point LGR without faults
+#     (2D/3D CORNERPOINT, FLEX): fork == master to 1e-6 on the solution.
+#     The earlier corner-point "divergence" was dominated by the well-cell bug
+#     (fork-fixed vs master-unfixed); with the fix in both, the small sub-cell
+#     geometry difference does not move the solution. The fork is still the
+#     geometrically correct one (centre-of-mass conservation, locked by
+#     tests/cpgrid/grdecl_refinement_test.cpp::slantedPillarRefinementConservesCenterOfMass).
+#   * 3DCORNERPOINT_XYZ ser==par is Lnz: parallel cell numbering nudges the
+#     timestep controller onto a different ministep count, but the field rates
+#     agree. Stabilising the controller is a separate task; more accurate linear
+#     solves (e.g. --linear-solver-reduction=1e-6) make ser and par take the
+#     identical Newton path, but not uniformly across decks.
+#   * CARFIN_GR (wells INSIDE the LGR): fork==master serial agrees (Lnz), but the
+#     PARALLEL run aborts (SIGABRT). This is the one genuine open bug -- the
+#     wells-in-LGR (compressedIndexForInteriorLGR) path in parallel.
+#   * 3DCORNERPOINT_XYZ-NON and CARFIN_FAULTS: do not run (the latter fails in
+#     opm-common FAULTS parsing, unrelated to the grid; faulted corner-point LGR
+#     is suspect in master anyway).
 #
 SPE1CASE1_CARFIN                          1e-6  1e-6
 SPE1CASE1_CARFIN1                         1e-6  1e-6
-SPE1CASE1_CARFIN1-2DCORNERPOINT_XY        FAIL  1e-6
-SPE1CASE1_CARFIN1-3DCORNERPOINT_XYZ       FAIL  FAIL
+SPE1CASE1_CARFIN1-2DCORNERPOINT_XY        1e-6  1e-6
+SPE1CASE1_CARFIN1-3DCORNERPOINT_XYZ       1e-6  Lnz
 SPE1CASE1_CARFIN1-3DCORNERPOINT_XYZ-NON   -     -
-SPE1CASE1_CARFIN_FLEX                     FAIL  1e-6
-SPE1CASE1_CARFIN_GR                       FAIL  -
+SPE1CASE1_CARFIN_FLEX                     1e-6  1e-6
+SPE1CASE1_CARFIN_GR                       Lnz   -
 SPE1CASE1_CARFIN_FAULTS                   -     -
