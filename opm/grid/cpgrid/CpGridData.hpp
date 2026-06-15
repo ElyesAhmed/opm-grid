@@ -72,6 +72,7 @@
 #include "Geometry.hpp"
 
 #include <array>
+#include <cstdint>
 #include <initializer_list>
 #include <set>
 #include <vector>
@@ -398,6 +399,20 @@ public:
     {
         return  global_cell_;
     }
+
+    /// Construction-stable, globally-unique id for every cell of this grid
+    /// view, independent of MPI rank, partition and build (the "D3" id).
+    ///
+    /// global_cell_ (the Cartesian index) is NOT unique on a refined leaf:
+    /// every refined sibling inherits its parent's Cartesian index (so that
+    /// refined cells pick up the parent's field properties), so it cannot key
+    /// per-cell output gathered across ranks. This id instead encodes, for a
+    /// refined cell, the pair (parent Cartesian index, child index within the
+    /// parent); an unrefined/coarse cell keeps its plain Cartesian index. The
+    /// two ranges are kept disjoint by a tag bit, so coarse and refined ids
+    /// never collide. Both inputs are construction data, so the id is identical
+    /// regardless of which rank built the cell.
+    std::vector<std::int64_t> stableCellId() const;
 
 
 

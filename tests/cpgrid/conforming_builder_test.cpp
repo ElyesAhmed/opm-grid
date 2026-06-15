@@ -234,6 +234,67 @@ BOOST_AUTO_TEST_CASE(endToEndSingleBox)
     BOOST_CHECK_EQUAL(pointIds.size(), static_cast<std::size_t>(grid.size(3)));
 }
 
+BOOST_AUTO_TEST_CASE(stableCellIdDisambiguatesRefinedSiblings)
+{
+    // global_cell_ is NOT unique on the leaf -- refined siblings share the
+    // parent's Cartesian index -- so it cannot key per-cell output gathered
+    // across ranks. stableCellId() must give every leaf cell a unique id:
+    // coarse cells keep their Cartesian index; refined cells encode
+    // (parent Cartesian, child index) under a tag bit.
+    auto parent = makeVerticalPillarGrid({4, 3, 3}, [](int, int, int k_) {
+        return 2.0*(cellOf(k_) + sideOf(k_));
+    });
+
+    Dune::CpGrid grid;
+    auto rawParent = parent.raw();
+    grid.processEclipseFormat(rawParent, false);
+
+    BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
+        parent.dims, parent.coord, parent.zcorn, parent.actnum));
+    grid.addLgrsUpdateLeafView({{2,2,2}}, {{1,1,1}}, {{3,2,2}}, {"LGR1"}); // 2 parents -> 16 refined
+
+    constexpr std::int64_t tag = std::int64_t(1) << 62;
+    constexpr std::int64_t childMask = (std::int64_t(1) << 20) - 1;
+
+    const auto sid = grid.stableCellId();
+    BOOST_REQUIRE_EQUAL(sid.size(), static_cast<std::size_t>(grid.size(0)));
+
+    // global_cell_ really does collide for siblings, but stableCellId does not.
+    const auto& gc = grid.globalCell();
+    BOOST_CHECK_LT(std::set<int>(gc.begin(), gc.end()).size(), gc.size());
+    BOOST_CHECK_EQUAL(std::set<std::int64_t>(sid.begin(), sid.end()).size(), sid.size());
+
+    std::map<int, std::set<int>> childrenOfParent; // father Cartesian -> child indices seen
+    int refined = 0, coarse = 0;
+    for (const auto& element : Dune::elements(grid.leafGridView())) {
+        const int c = element.index();
+        if (element.hasFather()) {
+            ++refined;
+            const int fatherCart = grid.currentData()[0]->globalCell()[element.father().index()];
+            BOOST_CHECK((sid[c] & tag) != 0);                       // tagged refined
+            BOOST_CHECK_EQUAL((sid[c] & ~tag) >> 20, fatherCart);    // decodes to parent Cartesian
+            childrenOfParent[fatherCart].insert(static_cast<int>(sid[c] & childMask));
+        }
+        else {
+            ++coarse;
+            BOOST_CHECK_EQUAL(sid[c] & tag, 0);                      // untagged coarse
+            BOOST_CHECK_EQUAL(sid[c], static_cast<std::int64_t>(gc[c]));
+        }
+    }
+    BOOST_CHECK_EQUAL(refined, 16);
+    BOOST_CHECK_GT(coarse, 0);
+    // Each of the two refined parents has all 8 distinct child indices 0..7.
+    BOOST_CHECK_EQUAL(childrenOfParent.size(), 2u);
+    for (const auto& [father, kids] : childrenOfParent) {
+        BOOST_CHECK_EQUAL(kids.size(), 8u);
+        BOOST_CHECK_EQUAL(*kids.begin(), 0);
+        BOOST_CHECK_EQUAL(*kids.rbegin(), 7);
+    }
+
+    // Construction-stable: recomputing yields the identical ids.
+    BOOST_CHECK(grid.stableCellId() == sid);
+}
+
 BOOST_AUTO_TEST_CASE(twoSeparatedBoxesAndGuards)
 {
     auto parent = makeVerticalPillarGrid({6, 3, 3}, [](int, int, int k_) {
