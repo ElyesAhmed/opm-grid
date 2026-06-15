@@ -556,7 +556,11 @@ BOOST_AUTO_TEST_CASE(faultInsideBoxEndToEnd)
 
 BOOST_AUTO_TEST_CASE(faultAtBoxBoundaryThrows)
 {
-    // Fault between i=1 and i=2; box boundary right on the fault plane.
+    // Fault between i=1 and i=2 (throw 0.6); box boundary right on the fault
+    // plane. The throw makes each boundary parent connect to two coarse cells,
+    // so the boundary face is split — the 'fault-split face' branch.
+    // TODO(faults-at-box-boundary): once supported, flip to BOOST_CHECK_NO_THROW
+    //   and assert volume conservation + correct boundary connections.
     auto depth = [](int i_, int j_, int k_) {
         (void)j_;
         const double base = 2.0*(cellOf(k_) + sideOf(k_));
@@ -571,6 +575,126 @@ BOOST_AUTO_TEST_CASE(faultAtBoxBoundaryThrows)
     BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
         parent.dims, parent.coord, parent.zcorn, parent.actnum));
 
-    BOOST_CHECK_THROW(grid.addLgrsUpdateLeafView({{2,2,2}}, {{2,0,0}}, {{4,2,2}}, {"LGR1"}),
-                      std::logic_error);
+    BOOST_CHECK_EXCEPTION(
+        grid.addLgrsUpdateLeafView({{2,2,2}}, {{2,0,0}}, {{4,2,2}}, {"LGR1"}),
+        std::logic_error,
+        [](const std::logic_error& e) {
+            return std::string(e.what()).find("fault-split") != std::string::npos;
+        });
+}
+
+// Note on the boundary throw branches: with vertical pillars + a ZCORN throw
+// (the helper here), a faulted box boundary always produces *split* faces (a
+// parent connecting to two coarse cells) — the 'fault-split face' branch. The
+// sibling 'partial (faulted or degenerate) face' branch needs the geometric
+// offset-pillar fault that the helper cannot express; it is exercised by the
+// flow deck opm-tests/flow_diagnostic_test/SIMPLE_2PH_W_FAULT_LGR.DATA.
+
+BOOST_AUTO_TEST_CASE(faultAtBoxBoundaryJDirectionThrows)
+{
+    // Fault and box boundary in the J direction — the other lateral axis.
+    // TODO(faults-at-box-boundary): flip to build + assertions when supported.
+    auto depth = [](int i_, int j_, int k_) {
+        (void)i_;
+        const double base = 2.0*(cellOf(k_) + sideOf(k_));
+        return (cellOf(j_) >= 2) ? base + 0.6 : base;
+    };
+    auto parent = makeVerticalPillarGrid({2, 4, 2}, depth);
+
+    Dune::CpGrid grid;
+    auto rawParent = parent.raw();
+    grid.processEclipseFormat(rawParent, false);
+
+    BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
+        parent.dims, parent.coord, parent.zcorn, parent.actnum));
+
+    BOOST_CHECK_EXCEPTION(
+        grid.addLgrsUpdateLeafView({{2,2,2}}, {{0,2,0}}, {{2,4,2}}, {"LGR1"}),
+        std::logic_error,
+        [](const std::logic_error& e) {
+            return std::string(e.what()).find("fault-split") != std::string::npos;
+        });
+}
+
+BOOST_AUTO_TEST_CASE(faultAtBoxBoundaryUpThrownSideThrows)
+{
+    // Box on the *up-thrown* side: fault between i=1 and i=2 (cells i>=2 thrown
+    // down), box i0-1 so its right boundary (i=2) faces the thrown neighbour.
+    // Mirror of faultAtBoxBoundaryThrows (box on the down-thrown side).
+    // TODO(faults-at-box-boundary): flip to build + assertions when supported.
+    auto depth = [](int i_, int j_, int k_) {
+        (void)j_;
+        const double base = 2.0*(cellOf(k_) + sideOf(k_));
+        return (cellOf(i_) >= 2) ? base + 0.6 : base;
+    };
+    auto parent = makeVerticalPillarGrid({4, 2, 2}, depth);
+
+    Dune::CpGrid grid;
+    auto rawParent = parent.raw();
+    grid.processEclipseFormat(rawParent, false);
+
+    BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
+        parent.dims, parent.coord, parent.zcorn, parent.actnum));
+
+    BOOST_CHECK_EXCEPTION(
+        grid.addLgrsUpdateLeafView({{2,2,2}}, {{0,0,0}}, {{2,2,2}}, {"LGR1"}),
+        std::logic_error,
+        [](const std::logic_error& e) {
+            return std::string(e.what()).find("fault-split") != std::string::npos;
+        });
+}
+
+BOOST_AUTO_TEST_CASE(faultLargeThrowAtBoxBoundaryThrows)
+{
+    // Throw larger than one layer (3.0 > layer thickness 2.0), three layers, so
+    // a boundary parent spans two coarse neighbours — fault-split with a wider
+    // overlap pattern than the single-layer-throw cases.
+    // TODO(faults-at-box-boundary): flip to build + assertions when supported.
+    auto depth = [](int i_, int j_, int k_) {
+        (void)j_;
+        const double base = 2.0*(cellOf(k_) + sideOf(k_));
+        return (cellOf(i_) >= 2) ? base + 3.0 : base;
+    };
+    auto parent = makeVerticalPillarGrid({4, 2, 3}, depth);
+
+    Dune::CpGrid grid;
+    auto rawParent = parent.raw();
+    grid.processEclipseFormat(rawParent, false);
+
+    BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
+        parent.dims, parent.coord, parent.zcorn, parent.actnum));
+
+    BOOST_CHECK_EXCEPTION(
+        grid.addLgrsUpdateLeafView({{2,2,2}}, {{2,0,0}}, {{4,2,3}}, {"LGR1"}),
+        std::logic_error,
+        [](const std::logic_error& e) {
+            return std::string(e.what()).find("fault-split") != std::string::npos;
+        });
+}
+
+BOOST_AUTO_TEST_CASE(faultNotOnBoxBoundaryBuilds)
+{
+    // Control: a fault exists (between i=0 and i=1) but the box (i=2..3) sits
+    // entirely on the down-thrown side, so its boundary toward the coarse
+    // neighbour (i=1) is a full, matching face. This must build today and
+    // conserve volume — it isolates "fault on the boundary" from "fault merely
+    // present in the grid".
+    auto depth = [](int i_, int j_, int k_) {
+        (void)j_;
+        const double base = 2.0*(cellOf(k_) + sideOf(k_));
+        return (cellOf(i_) >= 1) ? base + 0.6 : base;
+    };
+    auto parent = makeVerticalPillarGrid({4, 2, 2}, depth);
+
+    Dune::CpGrid grid;
+    auto rawParent = parent.raw();
+    grid.processEclipseFormat(rawParent, false);
+    const double volumeBefore = totalVolume(grid);
+
+    BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
+        parent.dims, parent.coord, parent.zcorn, parent.actnum));
+
+    BOOST_CHECK_NO_THROW(grid.addLgrsUpdateLeafView({{2,2,2}}, {{2,0,0}}, {{4,2,2}}, {"LGR1"}));
+    BOOST_CHECK_EQUAL(grid.maxLevel(), 1);
+    BOOST_CHECK_CLOSE(totalVolume(grid), volumeBefore, 1e-8);
 }
