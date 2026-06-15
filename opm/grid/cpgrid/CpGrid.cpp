@@ -1264,15 +1264,40 @@ const Dune::FieldVector<double,3> CpGrid::faceCenterEcl(int cell_index, int face
     // cell_to_face_[cell_index - refined neighboring cell] = {bottom, front, left, right, back, top} = {2,3,1,4,0,5} with
     // the notation used in faceVxMap.
 
-    for( int i=0; i<4; ++i ) {
-        if ((maxLevel() == 0) || twoCoarseNeighboringCells || isOnGridBoundary_coarseNeighboringCell) {
-            center += vertexPosition(current_data_->back()->cell_to_point_[cell_index][ faceVxMap[ face ][ i ] ]);
+    const bool useCellPoints = (maxLevel() == 0) || twoCoarseNeighboringCells || isOnGridBoundary_coarseNeighboringCell;
+    if (!useCellPoints) {
+        // Refined face with a coarse and a refined neighbour (an LGR boundary).
+        // The ECLIPSE convention is the four-vertex average; keep it for the
+        // usual planar quad. But a fault on a box boundary produces non-planar
+        // (skewed) or many-vertex split faces, where that average is a poor
+        // centre and can collapse onto a cell centre (degenerate, zero-distance
+        // -> NaN transmissibility). For those, use the proper face centroid.
+        const auto& fp = current_data_->back()->face_to_point_[intersection.id()];
+        if (fp.size() == 4) {
+            std::array<Dune::FieldVector<double,3>,4> v;
+            int k = 0;
+            for (auto it = fp.begin(); it != fp.end(); ++it) {
+                v[k++] = vertexPosition(*it);
+            }
+            const auto e1 = v[1] - v[0];
+            const auto e2 = v[2] - v[0];
+            Dune::FieldVector<double,3> nrm{ e1[1]*e2[2] - e1[2]*e2[1],
+                                             e1[2]*e2[0] - e1[0]*e2[2],
+                                             e1[0]*e2[1] - e1[1]*e2[0] };
+            const double nn = nrm.two_norm();
+            const double dev = (nn > 0.0) ? std::abs((v[3] - v[0]) * nrm) / nn : 0.0;
+            const double len = e1.two_norm() + e2.two_norm();
+            if (dev <= 1e-9 * std::max(len, 1.0)) {
+                center = v[0]; center += v[1]; center += v[2]; center += v[3];
+                center /= 4.0;
+                return center;  // planar quad: unchanged ECLIPSE behaviour
+            }
         }
-        else { //  (refined) intersection with one coarse neighboring cell and one refined neighboring cell
-            center += vertexPosition(current_data_->back()->face_to_point_[intersection.id()][i]);
-        }
+        return intersection.geometry().center();  // non-planar / many-vertex
     }
-
+    for( int i=0; i<4; ++i ) {
+        center += vertexPosition(current_data_->back()->cell_to_point_[cell_index][ faceVxMap[ face ][ i ] ]);
+    }
     for (int i=0; i<3; ++i) {
         center[i] /= 4;
     }
