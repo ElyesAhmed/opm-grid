@@ -120,6 +120,29 @@ double totalVolume(const Dune::CpGrid& grid)
     return vol;
 }
 
+// Structural validity of a leaf with a faulted box boundary (phase 1): one
+// refined level, volume conserved, every cell closed (sum of area*outward-normal
+// is zero), and the box connected to coarse neighbours.
+void checkValidFaultedLeaf(const Dune::CpGrid& grid, double volumeBefore)
+{
+    BOOST_CHECK_EQUAL(grid.maxLevel(), 1);
+    BOOST_CHECK_CLOSE(totalVolume(grid), volumeBefore, 1e-8);
+    int refinedToCoarse = 0;
+    for (const auto& element : Dune::elements(grid.leafGridView())) {
+        Dune::FieldVector<double,3> closure(0.0);
+        for (const auto& is : Dune::intersections(grid.leafGridView(), element)) {
+            auto n = is.centerUnitOuterNormal();
+            n *= is.geometry().volume();
+            closure += n;
+            if (is.neighbor() && is.inside().hasFather() != is.outside().hasFather()) {
+                ++refinedToCoarse;
+            }
+        }
+        BOOST_CHECK_SMALL(closure.two_norm(), 1e-9);
+    }
+    BOOST_CHECK_GT(refinedToCoarse, 0);
+}
+
 } // anonymous namespace
 
 BOOST_GLOBAL_FIXTURE(MPIFixture);
@@ -554,13 +577,13 @@ BOOST_AUTO_TEST_CASE(faultInsideBoxEndToEnd)
     }
 }
 
-BOOST_AUTO_TEST_CASE(faultAtBoxBoundaryThrows)
+BOOST_AUTO_TEST_CASE(faultAtBoxBoundaryBuilds)
 {
     // Fault between i=1 and i=2 (throw 0.6); box boundary right on the fault
-    // plane. The throw makes each boundary parent connect to two coarse cells,
-    // so the boundary face is split — the 'fault-split face' branch.
-    // TODO(faults-at-box-boundary): once supported, flip to BOOST_CHECK_NO_THROW
-    //   and assert volume conservation + correct boundary connections.
+    // plane. The boundary parents each connect to two coarse cells, so the
+    // boundary is rebuilt as split faces. Phase 1: assert the leaf is a valid
+    // polyhedral grid (builds, volume conserved, every interior face two-sided,
+    // refined boundary cells connected to the coarse neighbours).
     auto depth = [](int i_, int j_, int k_) {
         (void)j_;
         const double base = 2.0*(cellOf(k_) + sideOf(k_));
@@ -571,16 +594,44 @@ BOOST_AUTO_TEST_CASE(faultAtBoxBoundaryThrows)
     Dune::CpGrid grid;
     auto rawParent = parent.raw();
     grid.processEclipseFormat(rawParent, false);
+    const double volumeBefore = totalVolume(grid);
 
     BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
         parent.dims, parent.coord, parent.zcorn, parent.actnum));
 
-    BOOST_CHECK_EXCEPTION(
-        grid.addLgrsUpdateLeafView({{2,2,2}}, {{2,0,0}}, {{4,2,2}}, {"LGR1"}),
-        std::logic_error,
-        [](const std::logic_error& e) {
-            return std::string(e.what()).find("fault-split") != std::string::npos;
-        });
+    BOOST_REQUIRE_NO_THROW(grid.addLgrsUpdateLeafView({{2,2,2}}, {{2,0,0}}, {{4,2,2}}, {"LGR1"}));
+    BOOST_CHECK_EQUAL(grid.maxLevel(), 1);
+    BOOST_CHECK_CLOSE(totalVolume(grid), volumeBefore, 1e-8);
+
+    // Geometric validity: every leaf cell is closed, i.e. the sum of
+    // area * outward-unit-normal over all its faces is zero (divergence
+    // theorem). This validates the synthetic split faces' areas AND normal
+    // orientation, independent of how the interface is subdivided. Also: every
+    // interior face is two-sided, and the box connects to coarse neighbours.
+    std::map<std::pair<int,int>, int> pairCount;
+    int refinedToCoarse = 0;
+    for (const auto& element : Dune::elements(grid.leafGridView())) {
+        Dune::FieldVector<double,3> closure(0.0);
+        for (const auto& is : Dune::intersections(grid.leafGridView(), element)) {
+            auto n = is.centerUnitOuterNormal();
+            n *= is.geometry().volume();
+            closure += n;
+            if (is.neighbor()) {
+                const int a = is.inside().index();
+                const int b = is.outside().index();
+                BOOST_REQUIRE(a != b);
+                pairCount[{std::min(a, b), std::max(a, b)}] += 1;
+                if (is.inside().hasFather() != is.outside().hasFather()) {
+                    ++refinedToCoarse;
+                }
+            }
+        }
+        BOOST_CHECK_SMALL(closure.two_norm(), 1e-9);
+    }
+    for (const auto& [cells, count] : pairCount) {
+        BOOST_CHECK_EQUAL(count % 2, 0); // each shared face seen from both sides
+    }
+    BOOST_CHECK_GT(refinedToCoarse, 0);  // the box connects to coarse neighbours
 }
 
 // Note on the boundary throw branches: with vertical pillars + a ZCORN throw
@@ -590,10 +641,9 @@ BOOST_AUTO_TEST_CASE(faultAtBoxBoundaryThrows)
 // offset-pillar fault that the helper cannot express; it is exercised by the
 // flow deck opm-tests/flow_diagnostic_test/SIMPLE_2PH_W_FAULT_LGR.DATA.
 
-BOOST_AUTO_TEST_CASE(faultAtBoxBoundaryJDirectionThrows)
+BOOST_AUTO_TEST_CASE(faultAtBoxBoundaryJDirectionBuilds)
 {
     // Fault and box boundary in the J direction — the other lateral axis.
-    // TODO(faults-at-box-boundary): flip to build + assertions when supported.
     auto depth = [](int i_, int j_, int k_) {
         (void)i_;
         const double base = 2.0*(cellOf(k_) + sideOf(k_));
@@ -604,24 +654,19 @@ BOOST_AUTO_TEST_CASE(faultAtBoxBoundaryJDirectionThrows)
     Dune::CpGrid grid;
     auto rawParent = parent.raw();
     grid.processEclipseFormat(rawParent, false);
+    const double volumeBefore = totalVolume(grid);
 
     BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
         parent.dims, parent.coord, parent.zcorn, parent.actnum));
 
-    BOOST_CHECK_EXCEPTION(
-        grid.addLgrsUpdateLeafView({{2,2,2}}, {{0,2,0}}, {{2,4,2}}, {"LGR1"}),
-        std::logic_error,
-        [](const std::logic_error& e) {
-            return std::string(e.what()).find("fault-split") != std::string::npos;
-        });
+    BOOST_REQUIRE_NO_THROW(grid.addLgrsUpdateLeafView({{2,2,2}}, {{0,2,0}}, {{2,4,2}}, {"LGR1"}));
+    checkValidFaultedLeaf(grid, volumeBefore);
 }
 
-BOOST_AUTO_TEST_CASE(faultAtBoxBoundaryUpThrownSideThrows)
+BOOST_AUTO_TEST_CASE(faultAtBoxBoundaryUpThrownSideBuilds)
 {
     // Box on the *up-thrown* side: fault between i=1 and i=2 (cells i>=2 thrown
     // down), box i0-1 so its right boundary (i=2) faces the thrown neighbour.
-    // Mirror of faultAtBoxBoundaryThrows (box on the down-thrown side).
-    // TODO(faults-at-box-boundary): flip to build + assertions when supported.
     auto depth = [](int i_, int j_, int k_) {
         (void)j_;
         const double base = 2.0*(cellOf(k_) + sideOf(k_));
@@ -632,24 +677,19 @@ BOOST_AUTO_TEST_CASE(faultAtBoxBoundaryUpThrownSideThrows)
     Dune::CpGrid grid;
     auto rawParent = parent.raw();
     grid.processEclipseFormat(rawParent, false);
+    const double volumeBefore = totalVolume(grid);
 
     BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
         parent.dims, parent.coord, parent.zcorn, parent.actnum));
 
-    BOOST_CHECK_EXCEPTION(
-        grid.addLgrsUpdateLeafView({{2,2,2}}, {{0,0,0}}, {{2,2,2}}, {"LGR1"}),
-        std::logic_error,
-        [](const std::logic_error& e) {
-            return std::string(e.what()).find("fault-split") != std::string::npos;
-        });
+    BOOST_REQUIRE_NO_THROW(grid.addLgrsUpdateLeafView({{2,2,2}}, {{0,0,0}}, {{2,2,2}}, {"LGR1"}));
+    checkValidFaultedLeaf(grid, volumeBefore);
 }
 
-BOOST_AUTO_TEST_CASE(faultLargeThrowAtBoxBoundaryThrows)
+BOOST_AUTO_TEST_CASE(faultLargeThrowAtBoxBoundaryBuilds)
 {
     // Throw larger than one layer (3.0 > layer thickness 2.0), three layers, so
-    // a boundary parent spans two coarse neighbours — fault-split with a wider
-    // overlap pattern than the single-layer-throw cases.
-    // TODO(faults-at-box-boundary): flip to build + assertions when supported.
+    // a boundary parent spans two coarse neighbours — a wider overlap pattern.
     auto depth = [](int i_, int j_, int k_) {
         (void)j_;
         const double base = 2.0*(cellOf(k_) + sideOf(k_));
@@ -660,16 +700,13 @@ BOOST_AUTO_TEST_CASE(faultLargeThrowAtBoxBoundaryThrows)
     Dune::CpGrid grid;
     auto rawParent = parent.raw();
     grid.processEclipseFormat(rawParent, false);
+    const double volumeBefore = totalVolume(grid);
 
     BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
         parent.dims, parent.coord, parent.zcorn, parent.actnum));
 
-    BOOST_CHECK_EXCEPTION(
-        grid.addLgrsUpdateLeafView({{2,2,2}}, {{2,0,0}}, {{4,2,3}}, {"LGR1"}),
-        std::logic_error,
-        [](const std::logic_error& e) {
-            return std::string(e.what()).find("fault-split") != std::string::npos;
-        });
+    BOOST_REQUIRE_NO_THROW(grid.addLgrsUpdateLeafView({{2,2,2}}, {{2,0,0}}, {{4,2,3}}, {"LGR1"}));
+    checkValidFaultedLeaf(grid, volumeBefore);
 }
 
 BOOST_AUTO_TEST_CASE(faultNotOnBoxBoundaryBuilds)

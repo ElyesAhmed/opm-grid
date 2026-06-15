@@ -32,7 +32,9 @@ namespace Refinement
 struct BoundaryConnection
 {
     std::array<int,3> boxCell{};     ///< lattice (i,j,k) in the box's refined frame
-    int coarseNeighborCart{-1};      ///< parent Cartesian index of the coarse neighbour
+    int coarseNeighborCart{-1};      ///< parent Cartesian index of the coarse
+                                     ///< neighbour, or -1 if this part of the box
+                                     ///< boundary faces the domain (fault scarp)
     std::vector<std::array<double,3>> faceNodes; ///< face corner coordinates
 };
 

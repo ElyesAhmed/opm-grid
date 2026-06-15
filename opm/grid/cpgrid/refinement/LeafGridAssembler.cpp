@@ -26,6 +26,7 @@
 #include <opm/grid/cpgrid/Entity.hpp>
 #include <opm/grid/cpgrid/EntityRep.hpp>
 #include <opm/grid/cpgrid/Geometry.hpp>
+#include <opm/grid/cpgrid/refinement/FaultedBoundaryFaces.hpp>
 #include <opm/grid/cpgrid/refinement/GridStateWriter.hpp>
 
 #include <algorithm>
@@ -64,9 +65,41 @@ int axisOf(face_tag tag)
     }
 }
 
+face_tag faceTagOf(int axis)
+{
+    return axis == 0 ? I_FACE : axis == 1 ? J_FACE : K_FACE;
+}
+
 // In a distributed grid, face_to_cell uses this sentinel for a neighbor cell
 // that lives on another rank (not present locally).
 constexpr int kRemoteCell = std::numeric_limits<int>::max();
+
+// outsideNeighborOf returns this when the parent's boundary on a side is
+// crossed by a fault (split or partial face); the boundary is then rebuilt
+// from the corner-point processor instead of the simple mosaic.
+constexpr int kFaultedSide = -2;
+
+// Area-weighted normal (Newell), centroid and area of a planar-ish polygon.
+struct PolyGeom { Dune::FieldVector<double,3> center; Dune::FieldVector<double,3> normal; double area; };
+PolyGeom polygonGeometry(const std::vector<std::array<double,3>>& pts)
+{
+    PolyGeom g;
+    g.center = 0.0;
+    g.normal = 0.0;
+    const int n = static_cast<int>(pts.size());
+    for (int i = 0; i < n; ++i) {
+        const auto& a = pts[i];
+        const auto& b = pts[(i + 1) % n];
+        g.normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        g.normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        g.normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
+        for (int d = 0; d < 3; ++d) g.center[d] += a[d];
+    }
+    for (int d = 0; d < 3; ++d) g.center[d] /= (n > 0 ? n : 1);
+    g.area = 0.5 * g.normal.two_norm();
+    if (g.area > 0.0) g.normal /= g.normal.two_norm();  // unit
+    return g;
+}
 
 } // anonymous namespace
 
@@ -78,6 +111,10 @@ namespace Refinement
 std::shared_ptr<CpGridData>
 assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
                  const std::vector<BlockRefinement>& requests,
+                 const std::array<int,3>& parentDims,
+                 const double* coord,
+                 const double* zcorn,
+                 const int* actnum,
                  Dune::MPIHelper::MPICommunicator comm)
 {
     CpGridData& level0 = *storage[0];
@@ -245,7 +282,8 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
         }
         GridStateWriter::setCornerHistory(*box.level, std::move(levelCornerHistory));
     }
-    const int numLeafCorners = static_cast<int>(leafCorners.size());
+    // May grow below if faulted box boundaries introduce new split vertices.
+    int numLeafCorners = static_cast<int>(leafCorners.size());
 
     // ----- Leaf cells -----------------------------------------------------
     // Level-zero order, parents replaced by their children (idxInParent order).
@@ -302,16 +340,12 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
     Dune::cpgrid::EntityVariableBase<enum face_tag>& tags0 = faceTag0;
     std::map<std::tuple<int,int,int>, int> verifiedNeighbor;
     const auto outsideNeighborOf = [&](int b, int parent, int axis, int side) {
+        (void)b;
         const auto key = std::make_tuple(parent, axis, side);
         auto it = verifiedNeighbor.find(key);
         if (it != verifiedNeighbor.end()) {
             return it->second;
         }
-        const auto fail = [&](const std::string& what) {
-            throw std::logic_error("Refinement box '" + requests[b].name
-                                   + "': " + what + " at the block boundary (parent cell "
-                                   + std::to_string(parent) + "). Not supported yet.");
-        };
 
         // All faces of the parent in the (axis, side) direction.
         std::vector<int> directionFaces;
@@ -327,7 +361,7 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
 
         int neighbor = -1;
         if (directionFaces.size() > 1) {
-            fail("a fault-split face");
+            neighbor = kFaultedSide;            // fault-split face
         }
         else if (directionFaces.size() == 1) {
             const int face = directionFaces[0];
@@ -349,13 +383,15 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
                 actual.insert(*pt);
             }
             if (actual != expected) {
-                fail("a partial (faulted or degenerate) face");
+                neighbor = kFaultedSide;        // partial (faulted/degenerate) face
             }
-            const auto cells = faceToCell0[EntityRep<1>(face, true)];
-            for (int q = 0; q < cells.size(); ++q) {
-                const int cell = cells[q].index();
-                if (cell != parent && cell != kRemoteCell) {
-                    neighbor = cell;
+            else {
+                const auto cells = faceToCell0[EntityRep<1>(face, true)];
+                for (int q = 0; q < cells.size(); ++q) {
+                    const int cell = cells[q].index();
+                    if (cell != parent && cell != kRemoteCell) {
+                        neighbor = cell;
+                    }
                 }
             }
         }
@@ -384,6 +420,35 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
     // in its cell as the second side (the same mechanism as a coarse
     // mosaic neighbor, only the outside cell is refined).
     std::map<std::vector<int>, int> sharedBoundaryFaceLeaf; // corner set -> owner leaf face
+
+    // Pre-pass: which (box, axis, side) boundaries are faulted (some parent on
+    // that side has a split/partial level-zero face). Decided before the face
+    // loop so that ALL box boundary faces on a faulted side are suppressed
+    // consistently -- including parents whose throw clears the neighbour
+    // entirely (those alone look like a plain domain boundary). The whole side
+    // is then rebuilt from the corner-point processor below.
+    std::set<std::tuple<int,int,int>> faultedSides;
+    for (int c = 0; c < numCells0; ++c) {
+        const int b = boxOfCell[c];
+        if (b < 0) {
+            continue;
+        }
+        const int cart = level0.globalCell()[c];
+        const std::array<int,3> ijk = { cart % dims0[0],
+                                        (cart / dims0[0]) % dims0[1],
+                                        cart / (dims0[0]*dims0[1]) };
+        for (int axis = 0; axis < 3; ++axis) {
+            for (int side = -1; side <= 1; side += 2) {
+                const bool onBoundary = (side < 0)
+                    ? (ijk[axis] == requests[b].startIJK[axis])
+                    : (ijk[axis] == requests[b].endIJK[axis] - 1);
+                if (onBoundary && outsideNeighborOf(b, c, axis, side) == kFaultedSide) {
+                    faultedSides.emplace(b, axis, side);
+                }
+            }
+        }
+    }
+
     for (int b = 0; b < numBoxes; ++b) {
         BoxData& box = boxes[b];
         auto& faceToCellL = GridStateWriter::faceToCell(*box.level);
@@ -420,6 +485,11 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
                                               cart / (box.refinedDims[0]*box.refinedDims[1]) };
                 lattice[axis] += side;
                 if (lattice[axis] < 0 || lattice[axis] >= box.refinedDims[axis]) {
+                    // Faulted side: suppress this box face; the whole side is
+                    // rebuilt below from the corner-point processor.
+                    if (faultedSides.count(std::make_tuple(b, axis, side))) {
+                        continue;
+                    }
                     // Block boundary: find the neighbor parent (or none).
                     const int parent = childToParent[cell][1];
                     const int neighbor = outsideNeighborOf(b, parent, axis, side);
@@ -450,7 +520,106 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
             mosaicOutside.push_back(outside);
         }
     }
-    const int numLeafFaces = static_cast<int>(leafFaces.size());
+    const int numSourceFaces = static_cast<int>(leafFaces.size());
+
+    // ----- Faulted box boundaries: synthetic split faces -------------------
+    // Phase 1 (docs/PLAN.md Track 1): for each faulted (box, axis, side), the
+    // corner-point processor (faultedBoundaryConnections) gives the split
+    // connections between the refined boundary cells and the coarse
+    // neighbour(s). New split vertices join the leaf corner pool; each
+    // connection becomes a leaf face with real polygon geometry. (ECLIPSE
+    // transmissibility geometry at these faces is a separate, later layer.)
+    struct SyntheticFace
+    {
+        int boxCell;
+        int coarseCell;
+        std::vector<int> points;                 // leaf corner indices
+        Dune::FieldVector<double,3> normal;      // unit, box -> coarse
+        Dune::FieldVector<double,3> center;
+        double area;
+        enum face_tag tag;
+    };
+    std::vector<SyntheticFace> syntheticFaces;
+    if (!faultedSides.empty()) {
+        // coord -> leaf corner index, over the current pool (exact match: the
+        // box-boundary corners are produced by identical resampling arithmetic).
+        std::map<std::array<double,3>, int> cornerByCoord;
+        for (int c = 0; c < static_cast<int>(leafCorners.size()); ++c) {
+            cornerByCoord[coordKey(leafCorners[c])] = c;
+        }
+        // per box: refined Cartesian index -> level cell index
+        std::vector<std::map<int,int>> refinedCartToCell(numBoxes);
+        for (int b = 0; b < numBoxes; ++b) {
+            for (int c = 0; c < boxes[b].level->size(0); ++c) {
+                refinedCartToCell[b][boxes[b].level->globalCell()[c]] = c;
+            }
+        }
+
+        for (const auto& [b, axis, side] : faultedSides) {
+            const auto conns = faultedBoundaryConnections(
+                parentDims, coord, zcorn, actnum,
+                requests[b].startIJK, requests[b].endIJK, requests[b].cellsPerDim,
+                axis, side, /*edgeConformal=*/true);
+            const auto& rd = boxes[b].refinedDims;
+            for (const auto& conn : conns) {
+                const int refinedCart = conn.boxCell[0]
+                                      + rd[0]*conn.boxCell[1]
+                                      + rd[0]*rd[1]*conn.boxCell[2];
+                auto cit = refinedCartToCell[b].find(refinedCart);
+                if (cit == refinedCartToCell[b].end()) {
+                    continue; // refined boundary cell inactive
+                }
+                const int boxLeaf = leafIdxOfLevelCell[b][cit->second];
+                if (boxLeaf < 0) {
+                    continue;
+                }
+                // coarseNeighborCart == -1: this part of the box boundary faces
+                // the domain (the fault scarp) -> a boundary face (no outside).
+                int coarseLeaf = -1;
+                if (conn.coarseNeighborCart >= 0) {
+                    const int l0 = compressed0[conn.coarseNeighborCart];
+                    if (l0 < 0) {
+                        continue; // coarse neighbour inactive
+                    }
+                    coarseLeaf = leafIdxOfCell0[l0];
+                    if (coarseLeaf < 0) {
+                        continue; // coarse neighbour refined away
+                    }
+                }
+
+                // Map face nodes to leaf corners (dedup; append new vertices).
+                std::vector<int> pts;
+                pts.reserve(conn.faceNodes.size());
+                for (const auto& nd : conn.faceNodes) {
+                    const std::array<double,3> key3{ nd[0], nd[1], nd[2] };
+                    auto pit = cornerByCoord.find(key3);
+                    if (pit != cornerByCoord.end()) {
+                        pts.push_back(pit->second);
+                    }
+                    else {
+                        const int idx = static_cast<int>(leafCorners.size());
+                        leafCorners.push_back(Dune::cpgrid::Geometry<0,3>(
+                            Dune::FieldVector<double,3>{ nd[0], nd[1], nd[2] }));
+                        cornerByCoord.emplace(key3, idx);
+                        pts.push_back(idx);
+                    }
+                }
+
+                PolyGeom pg = polygonGeometry(conn.faceNodes);
+                // Orient normal box -> coarse (i.e. along the boundary side).
+                if (pg.normal[axis] * static_cast<double>(side) < 0.0) {
+                    pg.normal *= -1.0;
+                    std::reverse(pts.begin(), pts.end());
+                }
+                syntheticFaces.push_back(SyntheticFace{
+                    boxLeaf, coarseLeaf, std::move(pts), pg.normal, pg.center,
+                    pg.area, faceTagOf(axis)});
+            }
+        }
+        numLeafCorners = static_cast<int>(leafCorners.size());
+    }
+
+    const int numLeafFaces = numSourceFaces + static_cast<int>(syntheticFaces.size());
 
     // ----- Leaf topology ---------------------------------------------------
     auto& leafFaceToCell = GridStateWriter::faceToCell(*leaf);
@@ -471,7 +640,7 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
 
     std::vector<EntityRep<0>> rowBuffer;
     std::vector<int> pointBuffer;
-    for (int face = 0; face < numLeafFaces; ++face) {
+    for (int face = 0; face < numSourceFaces; ++face) {
         const SourceRef src = leafFaces[face];
         CpGridData& srcGrid = (src.grid == 0) ? level0 : *boxes[src.grid - 1].level;
         auto& srcFaceToCell = (src.grid == 0) ? faceToCell0 : GridStateWriter::faceToCell(srcGrid);
@@ -525,6 +694,24 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
         leafTags[face] = srcTags[src.index];
         leafNormals[face] = srcNormals[src.index];
         leafFaceGeom[face] = srcFaceGeom[src.index];
+    }
+
+    // Synthetic faulted-boundary faces: real polygon geometry, refined cell on
+    // the normal side, coarse neighbour opposite (matching the mosaic convention).
+    for (int s = 0; s < static_cast<int>(syntheticFaces.size()); ++s) {
+        const int face = numSourceFaces + s;
+        const SyntheticFace& sf = syntheticFaces[s];
+        std::vector<EntityRep<0>> cells;
+        cells.emplace_back(sf.boxCell, true);
+        if (sf.coarseCell >= 0) {
+            cells.emplace_back(sf.coarseCell, false);  // interior split face
+        }
+        // else: the box boundary faces the domain (fault scarp) -> boundary face
+        leafFaceToCell.appendRow(cells.begin(), cells.end());
+        leafFaceToPoint.appendRow(sf.points.begin(), sf.points.end());
+        leafTags[face] = sf.tag;
+        leafNormals[face] = sf.normal;
+        leafFaceGeom[face] = Dune::cpgrid::Geometry<2,3>(sf.center, sf.area);
     }
 
     // cell_to_face_ as the inverse of face_to_cell. Built manually rather

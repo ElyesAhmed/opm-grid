@@ -168,7 +168,10 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
         storage.push_back(std::move(level));
     }
 
-    auto leaf = assembleLeafGrid(storage, requests, comm);
+    auto leaf = assembleLeafGrid(storage, requests, dims_,
+                                 coord_.data(), zcorn_.data(),
+                                 actnum_.empty() ? nullptr : actnum_.data(),
+                                 comm);
     if (edgeConformal_) {
         edgeConformalizeLeaf(*leaf);
     }

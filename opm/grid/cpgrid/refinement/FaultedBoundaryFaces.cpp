@@ -26,6 +26,7 @@
 #include <opm/grid/cpgrid/refinement/RefinementRequest.hpp>
 #include <opm/grid/cpgpreprocess/preprocess.h>
 
+#include <algorithm>
 #include <array>
 
 namespace Opm
@@ -47,27 +48,36 @@ faultedBoundaryConnections(const std::array<int,3>& parentDims,
 {
     std::vector<BoundaryConnection> result;
 
-    // Extend the box by one parent cell on the (axis, side) side: the coarse
-    // "shell". Refining the box together with this shell and processing the
-    // result reproduces the box's boundary faces against the shell, split at
-    // any fault by the corner-point processor.
-    BlockRefinement req;
-    req.name = "FAULTBND";
-    req.cellsPerDim = cellsPerDim;
-    req.startIJK = boxStartIJK;
-    req.endIJK = boxEndIJK;
+    // Mini region: the box, plus a one-cell coarse "shell" on the (axis, side)
+    // side, plus a one-cell halo in the two perpendicular axes so a fault that
+    // throws the boundary onto a coarse cell outside the box footprint is still
+    // captured. Refining box+shell+halo and processing reproduces the box's
+    // boundary faces against the coarse neighbour(s), split at the fault.
+    std::array<int,3> miniStart = boxStartIJK;
+    std::array<int,3> miniEnd   = boxEndIJK;
     if (side < 0) {
-        req.startIJK[axis] -= 1;
-        if (req.startIJK[axis] < 0) {
-            return result; // shell off-grid: domain boundary, no connections
+        miniStart[axis] -= 1;
+        if (miniStart[axis] < 0) {
+            return result; // shell off-grid: the box boundary is the domain edge
         }
     }
     else {
-        req.endIJK[axis] += 1;
-        if (req.endIJK[axis] > parentDims[axis]) {
+        miniEnd[axis] += 1;
+        if (miniEnd[axis] > parentDims[axis]) {
             return result;
         }
     }
+    for (int p = 0; p < 3; ++p) {
+        if (p == axis) continue;
+        miniStart[p] = std::max(0, miniStart[p] - 1);
+        miniEnd[p]   = std::min(parentDims[p], miniEnd[p] + 1);
+    }
+
+    BlockRefinement req;
+    req.name = "FAULTBND";
+    req.cellsPerDim = cellsPerDim;
+    req.startIJK = miniStart;
+    req.endIJK = miniEnd;
 
     const RefinedBlockGrdecl refined = refineBlock(parentDims, coord, zcorn, actnum, req);
     const std::array<int,3> mdims = refined.dims;
@@ -83,14 +93,19 @@ faultedBoundaryConnections(const std::array<int,3>& parentDims,
         return result;
     }
 
-    // The shell occupies the first cellsPerDim[axis] cells along `axis` for
-    // side<0, the last cellsPerDim[axis] for side>0; the box is the rest.
-    const int f = cellsPerDim[axis];
-    const int shellLo = (side < 0) ? 0 : (mdims[axis] - f);
-    const int shellHi = shellLo + f;            // [shellLo, shellHi) are shell cells
     const enum face_tag axisFaceTag = (axis == 0) ? I_FACE
                                     : (axis == 1) ? J_FACE
                                                   : K_FACE;
+    // Offset (in refined cells) from the mini origin to the box origin, and the
+    // box's refined extent. The box's boundary layer in `axis` is at frame 0
+    // (side<0) or its last layer (side>0).
+    std::array<int,3> boxOffset{};
+    std::array<int,3> boxRefDims{};
+    for (int d = 0; d < 3; ++d) {
+        boxOffset[d]  = (boxStartIJK[d] - miniStart[d]) * cellsPerDim[d];
+        boxRefDims[d] = (boxEndIJK[d] - boxStartIJK[d]) * cellsPerDim[d];
+    }
+    const int boundaryLayer = (side < 0) ? 0 : boxRefDims[axis] - 1;
 
     const auto latticeOf = [&](int activeCell) {
         const int g = out.local_cell_index[activeCell];   // active -> logical (mini) index
@@ -98,41 +113,51 @@ faultedBoundaryConnections(const std::array<int,3>& parentDims,
                                   (g / mdims[0]) % mdims[1],
                                   g / (mdims[0] * mdims[1]) };
     };
+    const auto parentOfMini = [&](const std::array<int,3>& L) {
+        return std::array<int,3>{ miniStart[0] + L[0] / cellsPerDim[0],
+                                  miniStart[1] + L[1] / cellsPerDim[1],
+                                  miniStart[2] + L[2] / cellsPerDim[2] };
+    };
+    const auto inBox = [&](const std::array<int,3>& p) {
+        return p[0] >= boxStartIJK[0] && p[0] < boxEndIJK[0]
+            && p[1] >= boxStartIJK[1] && p[1] < boxEndIJK[1]
+            && p[2] >= boxStartIJK[2] && p[2] < boxEndIJK[2];
+    };
 
     for (unsigned face = 0; face < out.number_of_faces; ++face) {
         if (out.face_tag[face] != axisFaceTag) {
             continue;
         }
-        const int a = out.face_neighbors[2*face];
-        const int b = out.face_neighbors[2*face + 1];
-        if (a < 0 || b < 0) {
-            continue; // domain boundary on this face
+        // For an axis-face the normal points from neighbor 0 to neighbor 1, i.e.
+        // increasing `axis`. The box's boundary face toward `side` therefore has
+        // the box cell on the high-axis slot for side<0, the low-axis slot for
+        // side>0; the other slot is the coarse neighbour (or -1 at the domain).
+        const int boxSlot   = (side < 0) ? out.face_neighbors[2*face + 1] : out.face_neighbors[2*face];
+        const int otherSlot = (side < 0) ? out.face_neighbors[2*face]     : out.face_neighbors[2*face + 1];
+        if (boxSlot < 0) {
+            continue; // no box cell on this face
         }
-        const std::array<int,3> la = latticeOf(a);
-        const std::array<int,3> lb = latticeOf(b);
-        const bool aShell = (la[axis] >= shellLo && la[axis] < shellHi);
-        const bool bShell = (lb[axis] >= shellLo && lb[axis] < shellHi);
-        if (aShell == bShell) {
-            continue; // both shell or both box: not a box-boundary connection
+        const std::array<int,3> boxL = latticeOf(boxSlot);
+        std::array<int,3> boxFrame{ boxL[0] - boxOffset[0],
+                                    boxL[1] - boxOffset[1],
+                                    boxL[2] - boxOffset[2] };
+        if (boxFrame[0] < 0 || boxFrame[0] >= boxRefDims[0]
+            || boxFrame[1] < 0 || boxFrame[1] >= boxRefDims[1]
+            || boxFrame[2] < 0 || boxFrame[2] >= boxRefDims[2]) {
+            continue; // boxSlot is not a box cell
         }
-        const std::array<int,3> shellL = aShell ? la : lb;
-        const std::array<int,3> boxL   = aShell ? lb : la;
+        if (boxFrame[axis] != boundaryLayer) {
+            continue; // not the box's (axis, side) boundary layer
+        }
 
-        // Box cell lattice in the box's own refined frame: for side<0 the box
-        // is offset by f along axis; for side>0 it starts at 0.
-        std::array<int,3> boxFrame = boxL;
-        if (side < 0) {
-            boxFrame[axis] -= f;
+        int coarseCart = -1; // domain boundary part of the box boundary face
+        if (otherSlot >= 0) {
+            const std::array<int,3> op = parentOfMini(latticeOf(otherSlot));
+            if (inBox(op)) {
+                continue; // an internal box face, not a boundary face
+            }
+            coarseCart = op[0] + parentDims[0]*op[1] + parentDims[0]*parentDims[1]*op[2];
         }
-
-        // Coarse neighbour parent Cartesian: the shell cell's parent.
-        std::array<int,3> parentIJK{};
-        for (int d = 0; d < 3; ++d) {
-            parentIJK[d] = req.startIJK[d] + shellL[d] / cellsPerDim[d];
-        }
-        const int coarseCart = parentIJK[0]
-                             + parentDims[0] * parentIJK[1]
-                             + parentDims[0] * parentDims[1] * parentIJK[2];
 
         BoundaryConnection bc;
         bc.boxCell = boxFrame;
