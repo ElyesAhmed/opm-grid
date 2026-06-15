@@ -56,18 +56,24 @@ namespace Refinement
 /// and corner_history_ are populated so IdSet routes every leaf entity to
 /// the id of its birth-level entity.
 ///
-/// Current restrictions (throw): serial only is the caller's
-/// responsibility; block-boundary parent faces must be unfaulted
-/// (exactly one level-zero face per parent/neighbor pair).
+/// Block-boundary parent faces crossed by a fault are rebuilt from the
+/// corner-point processor (split faces against the coarse neighbour(s)); the
+/// parent description is needed for that.
 ///
 /// @param storage   The hierarchy [level0, level1..levelB]; level grids as
 ///                  produced by assembleBlockLevelGrid for requests[b].
 /// @param requests  The block requests, one per level grid.
+/// @param parentDims, coord, zcorn, actnum  The parent corner-point
+///                  description (actnum may be null).
 /// @param comm      Communicator for the leaf grid object.
 /// @return the assembled leaf; the caller appends it to storage.
 std::shared_ptr<Dune::cpgrid::CpGridData>
 assembleLeafGrid(std::vector<std::shared_ptr<Dune::cpgrid::CpGridData>>& storage,
                  const std::vector<BlockRefinement>& requests,
+                 const std::array<int,3>& parentDims,
+                 const double* coord,
+                 const double* zcorn,
+                 const int* actnum,
                  Dune::MPIHelper::MPICommunicator comm);
 
 } // namespace Refinement

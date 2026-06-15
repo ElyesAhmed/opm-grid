@@ -104,19 +104,29 @@ BOOST_AUTO_TEST_CASE(faultedIBoundarySplitsConnections)
     BOOST_REQUIRE(!conns.empty());
 
     std::map<std::array<int,3>, std::set<int>> neighborsOf; // box cell -> coarse carts
+    std::set<std::array<int,3>> boxCells;
+    int domainParts = 0;
     for (const auto& c : conns) {
         BOOST_CHECK_EQUAL(c.boxCell[0], 0);               // box's i-minus layer
         BOOST_CHECK_GE(c.faceNodes.size(), 3u);           // a real polygon
-        BOOST_CHECK_EQUAL(c.coarseNeighborCart % 5, 1);   // coarse neighbour at i=1
-        neighborsOf[c.boxCell].insert(c.coarseNeighborCart);
+        boxCells.insert(c.boxCell);
+        if (c.coarseNeighborCart < 0) {
+            ++domainParts;                                // throw scarp (faces domain)
+        }
+        else {
+            BOOST_CHECK_EQUAL(c.coarseNeighborCart % 5, 1); // coarse neighbour at i=1
+            neighborsOf[c.boxCell].insert(c.coarseNeighborCart);
+        }
     }
-    BOOST_CHECK_EQUAL(neighborsOf.size(), 16u);           // 4 (j) x 4 (k) sub-cells
+    BOOST_CHECK_EQUAL(boxCells.size(), 16u);              // 4 (j) x 4 (k) sub-cells
 
     int split = 0;
     for (const auto& [cell, nb] : neighborsOf) {
         if (nb.size() >= 2) ++split;
     }
-    BOOST_CHECK_GT(split, 0);                             // the fault actually splits faces
+    BOOST_CHECK_GT(split, 0);                             // the fault splits faces
+    BOOST_CHECK_GT(domainParts, 0);                      // the throw lifts the top
+                                                          // sub-faces above the grid
 }
 
 BOOST_AUTO_TEST_CASE(unfaultedBoundaryGivesOneToOne)

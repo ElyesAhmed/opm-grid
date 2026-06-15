@@ -324,9 +324,10 @@ BOOST_AUTO_TEST_CASE(edgeConformalLeavesNoHangingNode)
     BOOST_CHECK_EQUAL(countHangingNodes(true), 0); // the pass removes them all
 }
 
-// A box boundary that lies on the fault plane is the general faulted-boundary
-// restriction (not edge-conformal specific) and must throw clearly.
-BOOST_AUTO_TEST_CASE(refineBoxBoundaryOnFaultThrows)
+// A box boundary on the fault plane: the split faces are rebuilt from the
+// corner-point processor and must survive the edge-conformal pass (build,
+// volume conserved).
+BOOST_AUTO_TEST_CASE(refineBoxBoundaryOnFaultBuilds)
 {
     auto depth = [](int i_, int, int k_) {
         const double base = 2.0*(cellOf(k_) + sideOf(k_));
@@ -337,11 +338,13 @@ BOOST_AUTO_TEST_CASE(refineBoxBoundaryOnFaultThrows)
     Dune::CpGrid grid;
     auto raw = g.raw();
     grid.processEclipseFormat(raw, false, false, /*edge_conformal=*/true);
+    const double v0 = totalVolume(grid);
 
     BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
         g.dims, g.coord, g.zcorn, g.actnum));
 
     // Box i in [0,2): right boundary is the fault plane i=2.
-    BOOST_CHECK_THROW(grid.addLgrsUpdateLeafView({{2,2,2}}, {{0,0,0}}, {{2,2,2}}, {"LGR1"}),
-                      std::logic_error);
+    BOOST_REQUIRE_NO_THROW(grid.addLgrsUpdateLeafView({{2,2,2}}, {{0,0,0}}, {{2,2,2}}, {"LGR1"}));
+    BOOST_CHECK_EQUAL(grid.maxLevel(), 1);
+    BOOST_CHECK_CLOSE(totalVolume(grid), v0, 1e-8);
 }
