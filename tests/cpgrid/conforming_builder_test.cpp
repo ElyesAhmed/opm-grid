@@ -698,3 +698,52 @@ BOOST_AUTO_TEST_CASE(faultNotOnBoxBoundaryBuilds)
     BOOST_CHECK_EQUAL(grid.maxLevel(), 1);
     BOOST_CHECK_CLOSE(totalVolume(grid), volumeBefore, 1e-8);
 }
+
+BOOST_AUTO_TEST_CASE(processGrdeclSplitsFaultedCoarseFineColumnPair)
+{
+    // Kernel proof for faults-at-box-boundary (docs/PLAN.md Track 1): the planned
+    // fix builds the connecting faces at a faulted box boundary by running
+    // process_grdecl on a mini-grdecl (coarse neighbour + refined box boundary)
+    // and reading the split connections. This checks that mechanism in isolation.
+    //
+    // Column 0 (coarse): one cell z[0,4]; its second logical cell is pinched
+    //   (z[4,4]) so process_grdecl removes it -> one coarse cell.
+    // Column 1 (refined): two cells z[1,3] and z[3,5] -- the same span shifted by
+    //   a 1.0 throw. The coarse cell must connect to BOTH refined cells.
+    auto depth = [](int i_, int j_, int k_) {
+        (void)j_;
+        if (cellOf(i_) == 0) {                 // coarse column: cell0 [0,4], cell1 pinched at 4
+            return (k_ == 0) ? 0.0 : 4.0;
+        }
+        static const double fine[4] = {1.0, 3.0, 3.0, 5.0};   // refined, throw +1
+        return fine[k_];
+    };
+    auto g = makeVerticalPillarGrid({2, 1, 2}, depth);
+    auto raw = g.raw();
+
+    struct processed_grid out;
+    const int ok = process_grdecl(/*pinchActive=*/1, /*edge_conformal=*/0, 1e-6, &raw, nullptr, &out);
+    BOOST_REQUIRE(ok);
+
+    // Pinched coarse cell removed: one coarse + two refined.
+    BOOST_CHECK_EQUAL(out.number_of_cells, 3);
+
+    // The split connection lives in the interior I-faces between the two columns
+    // (face_neighbors holds compressed active cell ids; -1 is a domain boundary).
+    // The coarse cell (0) must connect to both refined cells (1 and 2).
+    int interiorIFaces = 0;
+    std::set<int> coarseConnectedTo;
+    for (unsigned f = 0; f < out.number_of_faces; ++f) {
+        const int a = out.face_neighbors[2*f];
+        const int b = out.face_neighbors[2*f + 1];
+        if (out.face_tag[f] == I_FACE && a >= 0 && b >= 0) {
+            ++interiorIFaces;
+            BOOST_CHECK((a == 0) || (b == 0));        // one side is the coarse cell
+            coarseConnectedTo.insert(a == 0 ? b : a);
+        }
+    }
+    BOOST_CHECK_EQUAL(interiorIFaces, 2);
+    BOOST_CHECK((coarseConnectedTo == std::set<int>{1, 2}));
+
+    free_processed_grid(&out);
+}
