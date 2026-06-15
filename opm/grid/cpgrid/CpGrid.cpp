@@ -687,6 +687,11 @@ const std::vector<int>& CpGrid::globalCell() const
     return currentLeafData().global_cell_;
 }
 
+std::vector<std::int64_t> CpGrid::stableCellId() const
+{
+    return currentLeafData().stableCellId();
+}
+
 
 
 std::vector<std::unordered_map<std::size_t, std::size_t>> CpGrid::mapLocalCartesianIndexSetsToLeafIndexSet() const

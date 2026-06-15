@@ -1,6 +1,8 @@
 #include"config.h"
 #include <algorithm>
 #include <array>
+#include <cassert>
+#include <cstdint>
 #include <map>
 #include <set>
 #include <vector>
@@ -85,6 +87,34 @@ CpGridData::CpGridData(MPIHelper::MPICommunicator comm,  std::vector<std::shared
     cell_interfaces_=std::make_tuple(Interface(ccobj_),Interface(ccobj_),Interface(ccobj_),Interface(ccobj_),Interface(ccobj_));
 #endif
     level_data_ptr_ = &data;
+}
+
+std::vector<std::int64_t> CpGridData::stableCellId() const
+{
+    // Refined cells carry their parent's Cartesian index in global_cell_, so a
+    // refined cell is identified by (parent Cartesian, child index). Pack that
+    // into a tagged 64-bit id; an unrefined/coarse cell keeps its plain
+    // Cartesian index (tag bit clear), so the two ranges never overlap.
+    // child index < 2^childBits (a child count far beyond any realistic
+    // refinement) and the parent index then has 62 - childBits bits.
+    constexpr int childBits = 20;
+    constexpr std::int64_t refinedTag = std::int64_t(1) << 62;
+
+    const std::size_t n = global_cell_.size();
+    std::vector<std::int64_t> ids(n);
+    const bool hasParents = !child_to_parent_cells_.empty();
+    for (std::size_t c = 0; c < n; ++c) {
+        const bool refined = hasParents && child_to_parent_cells_[c][0] != -1;
+        if (!refined) {
+            ids[c] = static_cast<std::int64_t>(global_cell_[c]);
+            continue;
+        }
+        const std::int64_t parentCart = global_cell_[c];      // parent's Cartesian index
+        const std::int64_t child = cell_to_idxInParentCell_[c]; // lattice index within parent
+        assert(child >= 0 && child < (std::int64_t(1) << childBits));
+        ids[c] = refinedTag | (parentCart << childBits) | child;
+    }
+    return ids;
 }
 
 #if HAVE_MPI

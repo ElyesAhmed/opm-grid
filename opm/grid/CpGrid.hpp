@@ -56,6 +56,7 @@
 
 #include <opm/grid/utility/OpmWellType.hpp>
 
+#include <cstdint>
 #include <set>
 
 namespace Opm
@@ -369,6 +370,13 @@ namespace Dune
         /// those dealing with permeability fields from the input deck
         /// from whence the current CpGrid was constructed.
         const std::vector<int>& globalCell() const;
+
+        /// Construction-stable, globally-unique id per cell of the current view
+        /// (the "D3" id). Unlike globalCell(), this disambiguates refined
+        /// siblings (which share their parent's Cartesian index), so it can key
+        /// per-cell output gathered across MPI ranks. See
+        /// CpGridData::stableCellId().
+        std::vector<std::int64_t> stableCellId() const;
 
         /// @brief Returns either data_ or distributed_data_(if non empty).
         const std::vector<std::shared_ptr<Dune::cpgrid::CpGridData>>& currentData() const;
