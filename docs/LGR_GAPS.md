@@ -1,0 +1,87 @@
+# LGR (corner-point local grid refinement) — known gaps & test decks
+
+Status of the `opm-gridrefined` LGR rebuild plus its `opm-simulators` /
+`opm-common` output integration, as of 2026-06-16. "Works" = exercised and
+verified this far; "gap" = throws, is skipped, or produces wrong output.
+
+What already works (for reference):
+- Serial LGR: grid build, solve, summary/PRT, EGRID/INIT/UNRST cell output,
+  fault crossing an LGR box boundary (`SIMPLE_2PH_W_FAULT_LGR`).
+- Parallel LGR (rank-interior boxes): solve (bit-identical global mass
+  balance vs serial), summary, **and cell/restart output** (EGRID/INIT/UNRST
+  per-grid arrays match serial — added 2026-06-16).
+- Wells completed inside an LGR (`COMPDATL`), serial and parallel.
+
+---
+
+## A. Refinement topology (opm-gridrefined `ConformingBlockBuilder`)
+
+These fail at grid build with a clear message. Each already has a *grid-unit*
+test in `tests/cpgrid/conforming_builder_test.cpp`; a *flow-level* deck is only
+useful as an end-to-end smoke test.
+
+| # | Gap | Where it throws | Deck |
+|---|-----|-----------------|------|
+| A1 | **Nested LGR** (an LGR refined inside another LGR, `parentGridName != GLOBAL`) | `ConformingBlockBuilder.cpp:113` | none yet — needs nested-`CARFIN` deck syntax (parent LGR named in the child `CARFIN`). Master supports it. |
+| A2 | **Touching boxes, non-matching subdivisions** (different `cellsPerDim` in a shared/overlap direction) | `ConformingBlockBuilder.cpp:143` | unit test `faceSharingNonMatchingSubdivisionsThrow`. A flow deck = two adjacent `CARFIN` boxes with different `NX/NY/NZ`. |
+| A3 | **Box that cannot be kept on one rank** (spans whole grid, or would empty another rank) — parallel only | `ConformingBlockBuilder.cpp:97` (classifyBox) / `CpGridVanguard::applyLgrPartitionCellGroups_` | `opm-tests/lgr/SPE1CASE1_CARFIN_GR.DATA` (`LGR1` spans the entire grid) — runs serial, throws an actionable error in parallel. Master supports it (distribute-then-refine). |
+| A4 | **A refinement box crossing a coarse fault that is *not* on the box boundary in some configs** | — | covered by `SIMPLE_2PH_W_FAULT_LGR` (boundary-crossing fault works); deep fault/pinch interactions inside a box are not separately tested. |
+
+Note: `CARFIN.DATA`/`CARFIN_FLEX.DATA` (diagonal, edge/corner-touching) now build
+and are bit-identical to master. `CARFIN_FAULTS.DATA` / `*XYZ-NON.DATA` fail in
+opm-common `FAULTS` parsing **on master too** — not a refinement gap.
+
+---
+
+## B. Output (opm-simulators / opm-common) — has flow-level test decks
+
+New decks live in `opm-tests/lgr/`, all derived from `SPE1CASE1_CARFIN1.DATA`.
+
+| # | Gap | Where | Test deck | Observed |
+|---|-----|-------|-----------|----------|
+| B1 | **MINPV with parallel LGR cell output.** The I/O-rank output grid is built with `processEclipseFormat(input_grid, nullptr)` (no `EclipseState`), so the post-MINPV pruning is not applied; for a deck that prunes cells the output grid (full) mismatches the simulation grid (pruned). | `opm-simulators/.../GenericCpGridVanguard.cpp` (outputGrid_ construction) | **`SPE1CASE1_CARFIN1_MINPV.DATA`** (one coarse cell PORO=0 + `MINPV 1.0`, prunes 300→299) | serial fine; **parallel restart PRESSURE differs from serial** (compareECL: 280 errors). Fix: build the output grid through the post-MINPV path. |
+| B2 | **RFT output for LGR is skipped.** | `opm-common/.../EclipseIO.cpp:1223` ("RFT file is currently skipped for LGR grids") | **`SPE1CASE1_CARFIN1_RFT.DATA`** (adds `WRFTPLT`) | run completes, **no `.RFT` file written** for the refined grid. |
+| B3 | **Restarting (reading) a refined-grid restart is rejected.** | `opm-simulators/.../FlowProblemBlackoil.hpp:1295` (`readEclRestartSolution_`) | **`SPE1CASE1_CARFIN1_RESTART.DATA`** (run `SPE1CASE1_CARFIN1` first, then this — needs `UNIFIN`) | throws *"Refined grids are not yet supported for restart"*. |
+| ~~B0~~ | **MPI_RANK in parallel LGR INIT — FIXED (2026-06-16).** Two parts: (a) *sizing* — `MPI_RANK` was written at the full refined-leaf size in the *main-grid* INIT slot (e.g. 924 where the main grid has 300); fixed in `EclGenericWriter_impl.hpp` writeInit (commit a2176e09d) by reducing the leaf `globalRanks_` to level-0 via `getOrigin()`. (b) *per-grid* — the simulator integer maps (incl. `MPI_RANK`) were written only for the main grid via `writeIntegerMaps()`, so the array was absent on refined LGR cells (ResInsight showed it only on the coarse region). Fixed in opm-common `WriteInit.cpp` (commit 2c2e859a5): `writeLGRLocalProperties` now mirrors each integer map onto every LGR via `filterArray(value, global_fathers)`, so each refined cell inherits its father's rank (= the box's owning rank). Verified CARFIN1 np=2: INIT `MPI_RANK` present in all 3 grid sections (main 300 with ranks 0/1, each LGR 324 uniformly its box rank); serial unchanged; parallel UNRST matches serial. |
+| B4 | **Parallel LGR trans/NNC in INIT.** The 2026-06-16 fix routes only the *cell-data gather* through the refined output grid; transmissibility/NNC still use the coarse `equilGrid_`. Inter-level `TRANNNC` in the parallel INIT is therefore not yet verified to match serial. | `EclGenericWriter` (equilGrid_ used by `computeTrans_`/`exportNncStructure_`) | reuse any LGR deck; **compare INIT `TRAN*`/`TRANNNC` serial vs np=2** | not yet checked — likely gap. |
+| B5 | **Block summary vectors at refined cells** (e.g. `BPR` inside an LGR, ECLIPSE `LGR`-qualified block syntax) | summary config | none yet | unverified. |
+
+---
+
+## C. Parallel correctness / infrastructure
+
+| # | Gap | Notes |
+|---|-----|-------|
+| C1 | **Distributed wells across an LGR boundary** | rank-interior model keeps each box on one rank; a well perforating cells on both sides of a rank cut, or `--enable-distributed-wells` with LGR, is untested. |
+| C1b | **Well completed inside an LGR (`COMPDATL`) at high rank counts** | works at np≤4, **hangs at np≥6** (`SIMPLE_2PH_W_FAULT_LGR`, injector I1 in the WELLI1 box). The well's assigned rank and the box's refining rank diverge, so `compressedIndexForInteriorLGR` finds the connection cells on *no* rank → `ParallelWellInfo.cpp:812` "cells not found" → `checkAllConnectionsFound` throws asymmetrically and deadlocks. Coarse-well LGR decks (e.g. `CARFIN1`) scale to np=8 fine. Partial fix landed (compressedIndexForInteriorLGR returns -1 instead of throwing out_of_range); the remaining fix is to anchor the LGR well to its box's parent coarse cell so its rank matches the box's, and/or make the connection-check collective-safe. **Reproducer:** `mpirun -np 8 flow SIMPLE_2PH_W_FAULT_LGR.DATA ...`. A run should finish in <10 s; a longer one is this hang. |
+| C2 | **Timestep-path stability serial vs parallel** | small numbering/geometry differences can move the adaptive controller to a different ministep count → different-length SMSPEC (values agree). Stabilising the controller is a separate task; the regression harness reports these as `Lnz` not FAIL. |
+| C3 | **Acceptance harness** | port upstream `tests/cpgrid/lgr/LgrChecks.hpp` invariants (equal cell/intersection geometry, father/siblings, id-consistency) and revive `global_refine` / `lgr_cartesian_idx` / `lgrIJK` tests once nested/parallel features catch up. |
+| C4 | **Refine-before-distribute (refine then load-balance) — investigated, not viable in the fork (2026-06-16).** The fork uses the *rank-interior* model: load-balance the coarse grid, then refine each box on its owning rank. The alternative (refine globally on rank 0, then distribute the already-refined grid — what upstream master does) was prototyped: `CpGridVanguard::loadBalance()` refining `grid_` before `doLoadBalance_`, plus relaxing the corner-point broadcast guard in `CpGrid.cpp`. Result: the broadcast asymmetry was fixable, but `CpGrid`'s scatter only distributes **level 0** and discards the refinement (the distributed-refinement / refined-grid-scatter machinery was *stripped* from this fork on the `strip-lgr` branch); `addLgrs()` then re-refines inconsistently and the run hangs in a second `assembleLeafGrid`. **Cannot be defaulted to true** without re-implementing refined-grid distribution — a substantial feature, separate track. Experiment reverted; tree clean. |
+
+---
+
+## How to run the new decks
+
+```sh
+FLOW=builds/refined/opm-simulators/bin/flow
+CMP=builds/refined/opm-common/bin/compareECL
+cd opm-tests/lgr
+
+# B1 MINPV: serial ok, parallel cell output wrong (gap)
+$FLOW SPE1CASE1_CARFIN1_MINPV.DATA --parsing-strictness=low --output-dir=/tmp/mp_s
+mpirun -np 2 $FLOW SPE1CASE1_CARFIN1_MINPV.DATA --parsing-strictness=low --output-dir=/tmp/mp_p
+$CMP -t UNRST -k PRESSURE -n /tmp/mp_s/SPE1CASE1_CARFIN1_MINPV /tmp/mp_p/SPE1CASE1_CARFIN1_MINPV 0.01 1e-3   # expect errors -> gap
+
+# B2 RFT: completes, no .RFT produced
+$FLOW SPE1CASE1_CARFIN1_RFT.DATA --parsing-strictness=low --output-dir=/tmp/rft
+ls /tmp/rft/*.RFT 2>/dev/null || echo "no RFT (gap)"
+
+# B3 restart: base run then restart -> expected throw
+$FLOW SPE1CASE1_CARFIN1.DATA --parsing-strictness=low --output-dir=/tmp/rb
+( cd /tmp/rb && $FLOW <repo>/opm-tests/lgr/SPE1CASE1_CARFIN1_RESTART.DATA --parsing-strictness=low --output-dir=. )
+# -> "Refined grids are not yet supported for restart"
+```
+
+When a gap is fixed, the corresponding deck becomes a positive regression
+(compareECL serial==parallel for B1; `.RFT` present + correct for B2; restart
+continues for B3).
