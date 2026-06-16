@@ -1648,8 +1648,17 @@ void CpGrid::addLgrsUpdateLeafView(const std::vector<std::array<int,3>>& cells_p
     // rank 0 (on the undistributed grid data_[0]); the scattered level zero
     // does not carry it, and non-root ranks have an empty data_. Broadcast it
     // so every rank's builder can resample the global box geometry.
-    if (comm().size() > 1
-        && !Opm::Refinement::GridStateWriter::retainedCornerPointInput(*currentData()[0])) {
+    //
+    // The broadcast is entered on size>1 regardless of whether the *current*
+    // grid already carries the retained input: in the default rank-interior
+    // path the scattered currentData()[0] never has it, so this is equivalent
+    // to the old `&& !retained...` guard; but in the experimental
+    // refine-before-redistribute path rank 0 refines the *undistributed* grid
+    // (which does carry the retained input) while the other ranks do not, so
+    // gating on `!retained` there made only the non-root ranks enter the
+    // collective and deadlocked. Entering unconditionally keeps the collective
+    // symmetric across ranks.
+    if (comm().size() > 1) {
         auto input = std::make_shared<Opm::Refinement::RetainedCornerPointInput>();
         int present = 0;
         if (comm().rank() == 0 && !data_.empty()) {
