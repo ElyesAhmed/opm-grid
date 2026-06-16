@@ -120,12 +120,26 @@ void WellConnections::init([[maybe_unused]] const std::vector<OpmWellType>& well
     for (const auto& well : wells) {
         std::set<int>& well_indices = well_indices_[index];
         const auto& connectionSet = well.getConnections( );
+        const std::size_t cartSize =
+            static_cast<std::size_t>(cartesianSize[0]) * cartesianSize[1] * cartesianSize[2];
         for (size_t c=0; c<connectionSet.size(); c++) {
             const auto& connection = connectionSet.get(c);
+            // Connections completed inside a local grid refinement (COMPDATL,
+            // lgr_level != 0) carry LGR-local (i,j,k) that do not address the
+            // level-zero Cartesian grid used here for load balancing.  They are
+            // kept on a single rank via the LGR partition cell groups (see
+            // addPartitionCellGroups), so skip them in the level-zero well
+            // graph instead of indexing the coarse map out of bounds.
+            if (connection.get_lgr_level() != 0) {
+                continue;
+            }
             int i = connection.getI();
             int j = connection.getJ();
             int k = connection.getK();
             int cart_grid_idx = i + cartesianSize[0]*(j + cartesianSize[1]*k);
+            if (cart_grid_idx < 0 || static_cast<std::size_t>(cart_grid_idx) >= cartSize) {
+                continue; // out of the level-zero Cartesian range
+            }
             int compressed_idx = cartesian_to_compressed[cart_grid_idx];
             if ( compressed_idx >= 0 ) // Ignore connections in inactive cells.
             {
@@ -135,6 +149,9 @@ void WellConnections::init([[maybe_unused]] const std::vector<OpmWellType>& well
         const auto possibleFutureConnectionSetIt = possibleFutureConnections.find(well.name());
         if (possibleFutureConnectionSetIt != possibleFutureConnections.end()) {
             for (auto& cart_grid_idx : possibleFutureConnectionSetIt->second) {
+                if (cart_grid_idx < 0 || static_cast<std::size_t>(cart_grid_idx) >= cartSize) {
+                    continue; // out of the level-zero Cartesian range (e.g. LGR cell)
+                }
                 int compressed_idx = cartesian_to_compressed[cart_grid_idx];
                 if ( compressed_idx >= 0 ) // Ignore connections in inactive cells.
                 {
