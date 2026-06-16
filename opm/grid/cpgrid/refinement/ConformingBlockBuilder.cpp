@@ -149,7 +149,12 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
     }
 
     auto& storage = grid.currentData();
-    const auto comm = Dune::MPIHelper::getCommunicator();
+    // Use the grid's own communicator (not the global MPIHelper one) so that a
+    // grid carrying a self-communicator - e.g. a serial output/reference grid
+    // built on the I/O rank of a parallel run - is refined purely locally
+    // (no collective calls).  For the distributed simulation grid this is the
+    // world communicator, i.e. unchanged behaviour.
+    const Dune::MPIHelper::MPICommunicator comm = grid.comm();
     const bool distributed = grid.comm().size() > 1;
 
     for (std::size_t b = 0; b < requests.size(); ++b) {
