@@ -378,6 +378,14 @@ namespace Dune
         /// CpGridData::stableCellId().
         std::vector<std::int64_t> stableCellId() const;
 
+        /// @brief Whether the grid has been scattered across MPI ranks yet.
+        /// False for the global (pre-load-balance) grid and for self-comm
+        /// reference grids; true once doLoadBalance_/scatterGrid has populated
+        /// distributed_data_. Used by the refinement builder to decide between
+        /// the rank-interior (distributed) and serial (refine-before-
+        /// redistribute / output-grid) refinement paths.
+        bool isDistributed() const { return !distributed_data_.empty(); }
+
         /// @brief Returns either data_ or distributed_data_(if non empty).
         const std::vector<std::shared_ptr<Dune::cpgrid::CpGridData>>& currentData() const;
 

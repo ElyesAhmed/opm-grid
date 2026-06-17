@@ -149,13 +149,22 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
     }
 
     auto& storage = grid.currentData();
-    // Use the grid's own communicator (not the global MPIHelper one) so that a
-    // grid carrying a self-communicator - e.g. a serial output/reference grid
-    // built on the I/O rank of a parallel run - is refined purely locally
-    // (no collective calls).  For the distributed simulation grid this is the
-    // world communicator, i.e. unchanged behaviour.
-    const Dune::MPIHelper::MPICommunicator comm = grid.comm();
-    const bool distributed = grid.comm().size() > 1;
+    // The refinement is "distributed" (rank-interior: only the owning rank
+    // refines each box) only once the grid has actually been scattered. Before
+    // load balancing - the refine-before-redistribute path - the grid is still
+    // the replicated global grid; refine it serially on every rank instead, so
+    // the builder refines every cell (no rank-interior classifyBox) and the
+    // leaf assembly does no collectives, producing the full refined grid a
+    // serial run yields, ready to be distributed afterwards.
+    const bool distributed = grid.comm().size() > 1 && grid.isDistributed();
+    // Use a self-communicator for serial refinement (refine-before-redistribute
+    // and the self-comm output/reference grid) so no operation is collective
+    // over the world communicator; the distributed simulation grid keeps the
+    // world communicator.
+    Dune::MPIHelper::MPICommunicator comm = Dune::MPIHelper::getLocalCommunicator();
+    if (distributed) {
+        comm = grid.comm();
+    }
 
     for (std::size_t b = 0; b < requests.size(); ++b) {
         // In a distributed run, only the rank that owns the (rank-interior)
