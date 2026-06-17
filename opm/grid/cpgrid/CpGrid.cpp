@@ -690,6 +690,35 @@ std::vector<std::int64_t> CpGrid::stableCellId() const
     return currentLeafData().stableCellId();
 }
 
+std::vector<int> CpGrid::leafPartitionFromLevelZero(const std::vector<int>& level0Part) const
+{
+    const auto& level0 = *currentData().front();
+    const auto& leaf = currentLeafData();
+    const auto& dims = level0.logicalCartesianSize();
+    const std::size_t cartSize =
+        static_cast<std::size_t>(dims[0]) * dims[1] * dims[2];
+
+    // Invert level zero's Cartesian -> compressed mapping.
+    std::vector<int> level0Compressed(cartSize, -1);
+    const auto& level0Global = level0.globalCell();
+    for (std::size_t c = 0; c < level0Global.size(); ++c) {
+        level0Compressed[level0Global[c]] = static_cast<int>(c);
+    }
+
+    // A leaf cell's global_cell_ is its parent's Cartesian index (for refined
+    // cells) or its own (for unrefined coarse cells); both invert through
+    // level zero to the owning coarse compressed index, whose rank we inherit.
+    const auto& leafGlobal = leaf.globalCell();
+    std::vector<int> leafPart(leafGlobal.size(), 0);
+    for (std::size_t c = 0; c < leafGlobal.size(); ++c) {
+        const int parent = level0Compressed[leafGlobal[c]];
+        leafPart[c] = (parent >= 0 && static_cast<std::size_t>(parent) < level0Part.size())
+            ? level0Part[parent]
+            : 0;
+    }
+    return leafPart;
+}
+
 
 
 std::vector<std::unordered_map<std::size_t, std::size_t>> CpGrid::mapLocalCartesianIndexSetsToLeafIndexSet() const
