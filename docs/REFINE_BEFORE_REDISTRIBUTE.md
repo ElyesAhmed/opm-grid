@@ -103,3 +103,38 @@ instead of throwing at `CpGrid.cpp:252`:
          siblings no longer collide), keeping `global_cell_` = parent Cartesian
          for `distributeFieldProps_`.
 - [ ] Step 3 — wire-up, guards, well check, verification.
+
+## Stage 2 — concrete code-level plan (from reading scatterGrid + distributeGlobalGrid)
+
+`scatterGrid` (`CpGrid.cpp` ~270-566) and `distributeGlobalGrid`
+(`CpGridData.cpp:1541`), for the refine-before leaf, need:
+
+1. **Comm:** `cc = data_[selectedLevel]->ccobj_` (line 270) is the Stage-1 leaf
+   *self*-comm (size 1) → the whole `if (cc.size()>1)` block is skipped. Use
+   `data_[0]->ccobj_` (world) as the distribution comm for the leaf path. The
+   leaf `distributed_data_[0]` is created `make_shared<CpGridData>(worldCc, ...)`.
+2. **Partition (propagate, don't re-partition the leaf):** run the existing
+   level-0 partitioner to get `level0Part`, then
+   `leafPart[c] = level0Part[ compressed0( leaf.global_cell_[c] ) ]`
+   (leaf `global_cell_` = parent Cartesian; `compressed0` inverts level-0
+   `globalCell()`).
+3. **Lists with unique ids:** the index set is built from `importList`
+   (`std::get<0>` = global id) at lines 547-553. Build `exportList`/`importList`
+   for the leaf **manually** from `leafPart` using `leaf.stableCellId()` as the
+   global id (NOT `createListsFromParts`, which keys on the colliding
+   `global_cell_`). Owner = `leafPart[c]==rank`; overlap = leaf cells face-
+   adjacent (`cell_to_face_`/`face_to_cell_`) to an owned cell but owned by
+   another rank (attribute `copy`/`overlap`). This mirrors the rank-interior
+   index-set build in `assembleLeafGrid` lines ~795-847, but partition-driven.
+4. **distributeGlobalGrid** then scatters cells/faces/points/geometry as-is
+   (it reads `view_data.cell_to_point_/cell_to_face_/face_to_point_/geometry_/
+   global_cell_` and the index set); `global_cell_` stays parent-Cartesian so
+   `distributeFieldProps_` inherits parent props. Verify `global_id_set_` for
+   the leaf returns `stableCellId` (else swap it in via the `map2GlobalCellId`
+   path at line 1566-1579).
+5. **Guards:** replace the `CpGrid.cpp:252` throw with the leaf path for the
+   refine-before case; keep it for unsupported combinations.
+
+Test ladder: (a) np=2 distributes without throw; (b) cell counts per rank sane;
+(c) solve completes; (d) solution == `=false`/serial to 1e-6 on
+`SIMPLE_2PH_W_FAULT_LGR`. Commit each rung.
