@@ -20,6 +20,7 @@
 #define OPM_GRID_REFINEMENT_LEVELGRIDASSEMBLER_HEADER_INCLUDED
 
 #include <opm/grid/cpgrid/refinement/RefinementRequest.hpp>
+#include <opm/grid/cpgrid/refinement/GrdeclRefinement.hpp>
 
 #include <dune/common/parallel/mpihelper.hh>
 
@@ -53,24 +54,33 @@ namespace Refinement
 /// to levelStorage; the caller is responsible for placing it at position
 /// levelIndex in that vector (and level zero at position 0).
 ///
-/// @param level0       The grid the parents live in (currently level zero).
+/// @param parentGrid   The grid the parents live in (level zero for a
+///                     top-level box, or an LGR level grid for a nested box).
 /// @param parentDims   Cartesian dimensions of the parent description.
 /// @param coord,zcorn  Parent COORD/ZCORN arrays.
 /// @param actnum       Parent ACTNUM or nullptr (all active).
-/// @param request      The block to refine.
+/// @param request      The block to refine (IJK in @p parentGrid's space).
 /// @param levelIndex   Index this level grid will occupy in the hierarchy.
+/// @param parentLevel  Level index of @p parentGrid (0 = GLOBAL); recorded in
+///                     the child->parent relation so nested grids point at the
+///                     LGR level they refine rather than always level zero.
 /// @param levelStorage The hierarchy vector the grid will live in.
 /// @param comm         Communicator for the new grid object.
+/// @param outRefined   If non-null, receives the resampled refined corner-point
+///                     description of this level (its own children, if any, are
+///                     refined from it).
 std::shared_ptr<Dune::cpgrid::CpGridData>
-assembleBlockLevelGrid(const Dune::cpgrid::CpGridData& level0,
+assembleBlockLevelGrid(const Dune::cpgrid::CpGridData& parentGrid,
                        const std::array<int,3>& parentDims,
                        const double* coord,
                        const double* zcorn,
                        const int* actnum,
                        const BlockRefinement& request,
                        int levelIndex,
+                       int parentLevel,
                        std::vector<std::shared_ptr<Dune::cpgrid::CpGridData>>& levelStorage,
-                       Dune::MPIHelper::MPICommunicator comm);
+                       Dune::MPIHelper::MPICommunicator comm,
+                       RefinedBlockGrdecl* outRefined = nullptr);
 
 /// An empty (zero-cell) refined level grid for a box that has no cells on
 /// this rank (distributed runs, rank-interior LGRs). All ranks must carry

@@ -39,15 +39,17 @@ namespace Refinement
 {
 
 std::shared_ptr<Dune::cpgrid::CpGridData>
-assembleBlockLevelGrid(const Dune::cpgrid::CpGridData& level0,
+assembleBlockLevelGrid(const Dune::cpgrid::CpGridData& parentGrid,
                        const std::array<int,3>& parentDims,
                        const double* coord,
                        const double* zcorn,
                        const int* actnum,
                        const BlockRefinement& request,
                        int levelIndex,
+                       int parentLevel,
                        std::vector<std::shared_ptr<Dune::cpgrid::CpGridData>>& levelStorage,
-                       Dune::MPIHelper::MPICommunicator comm)
+                       Dune::MPIHelper::MPICommunicator comm,
+                       RefinedBlockGrdecl* outRefined)
 {
     // Stages 2+3: resample the block geometry onto sub-pillars.
     const RefinedBlockGrdecl refined = refineBlock(parentDims, coord, zcorn, actnum, request);
@@ -87,11 +89,15 @@ assembleBlockLevelGrid(const Dune::cpgrid::CpGridData& level0,
     const auto& [rx, ry, rz] = request.cellsPerDim;
     const auto& [nx, ny, nz] = parentDims;
 
-    // Invert level zero's cartesian -> compressed mapping.
+    // Invert the parent grid's cartesian -> compressed mapping. For a
+    // top-level box the parent is level zero; for a nested box it is the LGR
+    // level grid being refined, whose globalCell() holds the refined-local
+    // Cartesian index (the same CARFIN convention), so the same inversion
+    // works in the parent's local index space.
     std::vector<int> parentCompressed(static_cast<std::size_t>(nx)*ny*nz, -1);
-    const auto& level0GlobalCell = level0.globalCell();
-    for (std::size_t c = 0; c < level0GlobalCell.size(); ++c) {
-        parentCompressed[level0GlobalCell[c]] = static_cast<int>(c);
+    const auto& parentGlobalCell = parentGrid.globalCell();
+    for (std::size_t c = 0; c < parentGlobalCell.size(); ++c) {
+        parentCompressed[parentGlobalCell[c]] = static_cast<int>(c);
     }
 
     const int numRefinedCells = level->size(0);
@@ -115,13 +121,19 @@ assembleBlockLevelGrid(const Dune::cpgrid::CpGridData& level0,
             throw std::logic_error("Refined cell in '" + request.name
                                    + "' has no active parent cell.");
         }
-        childToParent[cell] = {0, parentIdx};
+        childToParent[cell] = {parentLevel, parentIdx};
         idxInParent[cell] = (ir % rx) + (jr % ry)*rx + (kr % rz)*rx*ry;
     }
 
     GridStateWriter::setLevel(*level, levelIndex);
     GridStateWriter::setCellsPerDim(*level, request.cellsPerDim);
     GridStateWriter::setParentRelations(*level, std::move(childToParent), std::move(idxInParent));
+
+    // Expose the resampled description so a nested child can be refined from
+    // this level's geometry (its parent) rather than the global grid.
+    if (outRefined != nullptr) {
+        *outRefined = refined;
+    }
 
     return level;
 }

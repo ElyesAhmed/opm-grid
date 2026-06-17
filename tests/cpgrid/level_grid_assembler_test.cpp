@@ -124,6 +124,7 @@ BOOST_AUTO_TEST_CASE(levelGridWithParentRelations)
     auto level = Opm::Refinement::assembleBlockLevelGrid(*storage[0], parent.dims,
                                                          parent.coord.data(), parent.zcorn.data(),
                                                          nullptr, req, /* levelIndex = */ 1,
+                                                         /* parentLevel = */ 0,
                                                          storage, Dune::MPIHelper::getCommunicator());
     storage.push_back(level);
 
@@ -178,6 +179,7 @@ BOOST_AUTO_TEST_CASE(inactiveParentsHaveNoChildren)
     auto level = Opm::Refinement::assembleBlockLevelGrid(*storage[0], parent.dims,
                                                          parent.coord.data(), parent.zcorn.data(),
                                                          parent.actnum.data(), req, 1,
+                                                         /* parentLevel = */ 0,
                                                          storage, Dune::MPIHelper::getCommunicator());
     storage.push_back(level);
 
@@ -212,6 +214,7 @@ BOOST_AUTO_TEST_CASE(faultInsideBlockLevelGrid)
     auto level = Opm::Refinement::assembleBlockLevelGrid(*storage[0], parent.dims,
                                                          parent.coord.data(), parent.zcorn.data(),
                                                          nullptr, req, 1,
+                                                         /* parentLevel = */ 0,
                                                          storage, Dune::MPIHelper::getCommunicator());
     storage.push_back(level);
 

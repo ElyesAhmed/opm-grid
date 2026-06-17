@@ -534,6 +534,70 @@ BOOST_AUTO_TEST_CASE(faceSharingNonMatchingSubdivisionsThrow)
     BOOST_CHECK_EQUAL(grid.maxLevel(), 0);
 }
 
+// Nested LGR (a box whose parent is another LGR). The level grids are built
+// over their parent (Phase A/B of docs/NESTED_LGR_PLAN.md), but the recursive
+// leaf stitching (Phase C) is not implemented yet, so the build is expected to
+// reach that boundary and throw a precise, staged message. Locks in: (a) parent
+// ordering is honoured, (b) the staged failure is the *leaf* one (i.e. the
+// nested level grids were successfully assembled first).
+BOOST_AUTO_TEST_CASE(nestedRefinementReachesLeafBoundary)
+{
+    auto parent = makeVerticalPillarGrid({4, 2, 2}, [](int, int, int k_) {
+        return 2.0*(cellOf(k_) + sideOf(k_));
+    });
+
+    Dune::CpGrid grid;
+    auto rawParent = parent.raw();
+    grid.processEclipseFormat(rawParent, false);
+
+    BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
+        parent.dims, parent.coord, parent.zcorn, parent.actnum));
+
+    // LGR1: 2x1x1 GLOBAL parents -> local refined dims 4x2x2.
+    // NEST1: a box inside LGR1's local space, parent "LGR1".
+    const auto isNestedLeafBoundary = [](const std::logic_error& e) {
+        return std::string(e.what()).find("Nested LGR leaf assembly is not implemented")
+               != std::string::npos;
+    };
+    BOOST_CHECK_EXCEPTION(
+        grid.addLgrsUpdateLeafView({{2,2,2}, {2,2,2}},
+                                   {{1,0,0}, {0,0,0}},
+                                   {{3,1,1}, {2,2,2}},
+                                   {"LGR1", "NEST1"},
+                                   {"GLOBAL", "LGR1"}),
+        std::logic_error, isNestedLeafBoundary);
+}
+
+// The builder appends level grids in request order and resolves each box's
+// parent by name, so a child must follow its parent. A child listed before its
+// parent must be rejected with an actionable message (the simulator's
+// topological sort is what guarantees this never happens in practice).
+BOOST_AUTO_TEST_CASE(nestedChildBeforeParentThrows)
+{
+    auto parent = makeVerticalPillarGrid({4, 2, 2}, [](int, int, int k_) {
+        return 2.0*(cellOf(k_) + sideOf(k_));
+    });
+
+    Dune::CpGrid grid;
+    auto rawParent = parent.raw();
+    grid.processEclipseFormat(rawParent, false);
+
+    BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
+        parent.dims, parent.coord, parent.zcorn, parent.actnum));
+
+    const auto isUnbuiltParent = [](const std::logic_error& e) {
+        return std::string(e.what()).find("has not been built yet")
+               != std::string::npos;
+    };
+    BOOST_CHECK_EXCEPTION(
+        grid.addLgrsUpdateLeafView({{2,2,2}, {2,2,2}},
+                                   {{0,0,0}, {1,0,0}},
+                                   {{2,2,2}, {3,1,1}},
+                                   {"NEST1", "LGR1"},
+                                   {"LGR1", "GLOBAL"}),
+        std::logic_error, isUnbuiltParent);
+}
+
 BOOST_AUTO_TEST_CASE(faultInsideBoxEndToEnd)
 {
     // Fault between i=1 and i=2 columns, throw 0.6; box covers it.

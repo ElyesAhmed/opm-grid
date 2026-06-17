@@ -31,9 +31,12 @@
 
 #include <dune/common/parallel/mpihelper.hh>
 
+#include <array>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace Opm
 {
@@ -145,12 +148,6 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
     if (grid.maxLevel() != 0) {
         throw std::logic_error("ConformingBlockBuilder requires an unrefined starting grid.");
     }
-    for (const auto& req : requests) {
-        if (req.parentGridName != "GLOBAL") {
-            throw std::logic_error("Nested refinement ('" + req.name + "' with parent '"
-                                   + req.parentGridName + "') is not supported yet.");
-        }
-    }
     // Conformity check for touching boxes. With disjoint boxes, a pair
     // either is fully separated, shares an edge/corner, or shares a 2D
     // face. The shared refined entities (corners along a shared edge,
@@ -164,6 +161,13 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
         for (std::size_t j = i + 1; j < requests.size(); ++j) {
             const auto& a = requests[i];
             const auto& b = requests[j];
+            // Only boxes refining the same parent grid live in a common
+            // Cartesian index space; their IJK extents are comparable. Boxes
+            // with different parents (e.g. a nested box vs a top-level box)
+            // are indexed in different spaces and cannot touch by construction.
+            if (a.parentGridName != b.parentGridName) {
+                continue;
+            }
             // The boxes share an entity (corner/edge/face) only if they
             // touch-or-overlap in every dimension; a gap in any dimension
             // means they are fully separated and impose no constraint.
@@ -214,23 +218,80 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
     // placeholders) and refine serially with the self-communicator above.
     const bool refineBefore = grid.comm().size() > 1 && !grid.isDistributed();
 
+    // Nested refinement (parent != GLOBAL): build the level grids over their
+    // parent LGR, but the leaf assembler does not yet stitch more than one
+    // level of refinement (see docs/NESTED_LGR_PLAN.md Phase C). Parallel
+    // nested is a separate track (Phase D). Detect both up front.
+    bool anyNested = false;
+    for (const auto& req : requests) {
+        if (req.parentGridName != "GLOBAL") {
+            anyNested = true;
+            if (distributed) {
+                throw std::logic_error("Nested refinement ('" + req.name + "' with parent '"
+                    + req.parentGridName + "') is not supported in parallel yet.");
+            }
+        }
+    }
+
+    // Parent corner-point description per built level (index 0 = GLOBAL base,
+    // index b+1 = the level grid of request b). A nested box is refined from
+    // its parent level's resampled geometry, not the global grid.
+    struct LevelGeom {
+        std::array<int,3> dims{};
+        std::vector<double> coord;
+        std::vector<double> zcorn;
+        std::vector<int> actnum;
+    };
+    std::vector<LevelGeom> levelGeom(requests.size() + 1);
+    levelGeom[0] = LevelGeom{ dims_, coord_, zcorn_, actnum_ };
+    std::map<std::string,int> nameToLevel{ {"GLOBAL", 0} };
+
     for (std::size_t b = 0; b < requests.size(); ++b) {
+        const auto& req = requests[b];
+        const auto itParent = nameToLevel.find(req.parentGridName);
+        if (itParent == nameToLevel.end()) {
+            throw std::logic_error("Refinement box '" + req.name + "' names parent grid '"
+                + req.parentGridName + "', which has not been built yet. Parent LGRs "
+                "must be ordered before their children.");
+        }
+        const int parentLevel = itParent->second;
+        const LevelGeom& pg = levelGeom[parentLevel];
+
         // In a distributed run, only the rank that owns the (rank-interior)
         // box refines it; other ranks carry an empty placeholder level grid.
+        // Nested boxes are serial-only (guarded above), so a distributed run is
+        // always top-level here and classifies against level zero. The refine-
+        // before-redistribute path (also top-level only - nested+parallel threw
+        // above) classifies by cell presence. Plain serial / nested stay Owned.
         BoxPresence presence = BoxPresence::Owned;
         if (distributed) {
-            presence = classifyBox(*storage[0], dims_, requests[b]);
+            presence = classifyBox(*storage[0], dims_, req);
         } else if (refineBefore) {
-            presence = boxCellPresence(*storage[0], dims_, requests[b]);
+            presence = boxCellPresence(*storage[0], dims_, req);
         }
+        RefinedBlockGrdecl childRefined;
         auto level = (presence == BoxPresence::Owned)
-            ? assembleBlockLevelGrid(*storage[0], dims_,
-                                     coord_.data(), zcorn_.data(),
-                                     actnum_.empty() ? nullptr : actnum_.data(),
-                                     requests[b], static_cast<int>(b) + 1,
-                                     storage, comm)
-            : assembleEmptyLevelGrid(requests[b], static_cast<int>(b) + 1, storage, comm);
+            ? assembleBlockLevelGrid(*storage[parentLevel], pg.dims,
+                                     pg.coord.data(), pg.zcorn.data(),
+                                     pg.actnum.empty() ? nullptr : pg.actnum.data(),
+                                     req, static_cast<int>(b) + 1, parentLevel,
+                                     storage, comm, &childRefined)
+            : assembleEmptyLevelGrid(req, static_cast<int>(b) + 1, storage, comm);
         storage.push_back(std::move(level));
+        levelGeom[b + 1] = LevelGeom{ childRefined.dims,
+                                      std::move(childRefined.coord),
+                                      std::move(childRefined.zcorn),
+                                      std::move(childRefined.actnum) };
+        nameToLevel[req.name] = static_cast<int>(b) + 1;
+    }
+
+    if (anyNested) {
+        // Level grids for the nested hierarchy are in place; the recursive
+        // leaf stitching is the remaining work.
+        throw std::logic_error("Nested LGR leaf assembly is not implemented yet "
+            "(docs/NESTED_LGR_PLAN.md Phase C): the nested level grids were built, "
+            "but assembleLeafGrid still stitches a single level of refinement over "
+            "GLOBAL.");
     }
 
     auto leaf = assembleLeafGrid(storage, requests, dims_,
