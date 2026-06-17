@@ -99,6 +99,43 @@ BoxPresence classifyBox(const Dune::cpgrid::CpGridData& level0,
                            "use CpGrid::setPartitionCellGroups to keep the box on one rank.");
 }
 
+// refine-before-redistribute classification: before load balancing the global
+// grid lives on rank 0 (all cells) and is empty on the other ranks. Classify a
+// box purely by cell *presence* (ignoring partition type, which is not yet set):
+// the rank that holds all of the box's cells refines it; ranks with none carry
+// an empty placeholder level grid. A partial presence (some but not all cells)
+// is not expected here and is rejected.
+BoxPresence boxCellPresence(const Dune::cpgrid::CpGridData& level0,
+                            const std::array<int,3>& dims,
+                            const Opm::Refinement::BlockRefinement& req)
+{
+    const int boxCells = (req.endIJK[0] - req.startIJK[0])
+                       * (req.endIJK[1] - req.startIJK[1])
+                       * (req.endIJK[2] - req.startIJK[2]);
+    int present = 0;
+    const auto& globalCell = level0.globalCell();
+    for (int c = 0; c < level0.size(0); ++c) {
+        const int cart = globalCell[c];
+        const int i = cart % dims[0];
+        const int j = (cart / dims[0]) % dims[1];
+        const int k = cart / (dims[0]*dims[1]);
+        if (i >= req.startIJK[0] && i < req.endIJK[0]
+            && j >= req.startIJK[1] && j < req.endIJK[1]
+            && k >= req.startIJK[2] && k < req.endIJK[2]) {
+            ++present;
+        }
+    }
+    if (present == 0) {
+        return BoxPresence::Absent;
+    }
+    if (present == boxCells) {
+        return BoxPresence::Owned;
+    }
+    throw std::logic_error("Refinement box '" + req.name + "' is only partially present on "
+                           "this rank before load balancing; refine-before-redistribute "
+                           "expects the full global grid on a single rank.");
+}
+
 } // anonymous namespace
 
 void ConformingBlockBuilder::build(Dune::CpGrid& grid,
@@ -165,13 +202,21 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
     if (distributed) {
         comm = grid.comm();
     }
+    // refine-before-redistribute: comm().size() > 1 but the grid is not yet
+    // scattered. The global grid is on rank 0 and empty on the others, so we
+    // classify boxes by cell presence (rank 0 refines, the rest get empty
+    // placeholders) and refine serially with the self-communicator above.
+    const bool refineBefore = grid.comm().size() > 1 && !grid.isDistributed();
 
     for (std::size_t b = 0; b < requests.size(); ++b) {
         // In a distributed run, only the rank that owns the (rank-interior)
         // box refines it; other ranks carry an empty placeholder level grid.
-        const auto presence = distributed
-            ? classifyBox(*storage[0], dims_, requests[b])
-            : BoxPresence::Owned;
+        BoxPresence presence = BoxPresence::Owned;
+        if (distributed) {
+            presence = classifyBox(*storage[0], dims_, requests[b]);
+        } else if (refineBefore) {
+            presence = boxCellPresence(*storage[0], dims_, requests[b]);
+        }
         auto level = (presence == BoxPresence::Owned)
             ? assembleBlockLevelGrid(*storage[0], dims_,
                                      coord_.data(), zcorn_.data(),

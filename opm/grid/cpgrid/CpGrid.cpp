@@ -238,8 +238,18 @@ CpGrid::scatterGrid(EdgeWeightMethod method,
     bool validLevel = (level>-1) && (level <= maxLevel());
     // If level == -1, leaf grid view should be distributed (with/without LGRs).
     // - without LGRs: leaf grid view coincides with level zero grid. Supported.
-    // - with LGRs: not supported yet. Throw in that case.
+    // - with LGRs (refine-before-redistribute): distribute the leaf by
+    //   partitioning level zero and propagating that partition to the children.
     int selectedLevel = validLevel? level : 0;
+    // Refine-before-redistribute: the grid was already refined (maxLevel>0)
+    // before load balancing and we are asked to distribute the leaf (level==-1).
+    // Partition level zero here; the leaf is distributed from the propagated
+    // partition further below.
+    const bool refineBeforeLeaf = (maxLevel() > 0) && (level == -1);
+    if (refineBeforeLeaf) {
+        level = 0;
+        selectedLevel = 0;
+    }
     if (validLevel && (level>0)) {
         if (comm().rank() == 0) {
             OPM_THROW(std::logic_error, "Loadbalancing a refined level grid is not supported, yet.");
@@ -258,7 +268,7 @@ CpGrid::scatterGrid(EdgeWeightMethod method,
         }
     }
 
-    if ((maxLevel()>0) && (partitionMethod!= Dune::PartitionMethod::zoltanGoG)) {
+    if ((maxLevel()>0) && (partitionMethod!= Dune::PartitionMethod::zoltanGoG) && !refineBeforeLeaf) {
         if (comm().rank() == 0) {
             OPM_THROW(std::logic_error, "Loadbalancing level zero grid of a grid with local refinement is supported for ZOLTANGOG.");
         }
@@ -388,6 +398,31 @@ CpGrid::scatterGrid(EdgeWeightMethod method,
             }
         }
         comm().barrier();
+
+        if (refineBeforeLeaf) {
+            // Stage 2b checkpoint: the level-zero partition is computed
+            // (computedCellPart, full on rank 0). Propagate it to the leaf and
+            // report the per-rank leaf-cell counts as a sanity check. The leaf
+            // data distribution (parallel index set / interfaces keyed on
+            // stableCellId, then scatter) is the next increment.
+            const std::vector<int> leafPart = leafPartitionFromLevelZero(computedCellPart);
+            if (cc.rank() == 0) {
+                std::vector<int> counts(cc.size(), 0);
+                for (const int p : leafPart) {
+                    if (p >= 0 && p < static_cast<int>(cc.size())) ++counts[p];
+                }
+                std::string msg = "refine-before-redistribute: leaf cells = "
+                    + std::to_string(leafPart.size()) + "; per rank:";
+                for (std::size_t r = 0; r < counts.size(); ++r) {
+                    msg += " r" + std::to_string(r) + "=" + std::to_string(counts[r]);
+                }
+                Opm::OpmLog::info(msg);
+            }
+            OPM_THROW(std::logic_error,
+                      "refine-before-redistribute Stage 2b: leaf partition computed and "
+                      "propagated (per-rank counts logged); leaf data distribution is the "
+                      "next increment.");
+        }
 
         // first create the overlap
         auto noImportedOwner = addOverlapLayer(*this,
