@@ -79,6 +79,25 @@ instead of throwing at `CpGrid.cpp:252`:
   `SIMPLE_2PH_W_FAULT_LGR` and `SPE1CASE1_CARFIN1`.
 - Output (EGRID/INIT/UNRST per-LGR) is a separate track; the solve is the goal.
 
+## Discovered blocker ladder (the flow has more interlocking parts than 3 steps)
+
+Each refine-before blocker found and cleared, in order:
+1. **classifyBox** rejected the box — cleared by Step 1 (serial refine).
+2. **rank-0-full / rank-1-empty layout.** Before load balancing the global grid
+   is on rank 0 (all cells) and *empty* on the others (NOT replicated). Forcing
+   every box Owned made empty ranks throw "no active parent cell." Cleared by
+   classifying boxes by cell *presence* (`boxCellPresence`): rank 0 refines,
+   empty ranks get placeholder level grids (commit afbc48e3).
+3. **EQUIL / output-grid setup (CURRENT blocker).** `GenericCpGridVanguard`
+   builds `equilGrid_ = CpGrid(*grid_)` and the I/O output grid *before*
+   scatterGrid, and `equilGrid()` asserts `mpiRank==0` / assumes a *coarse*
+   `grid_`. The pre-refined `grid_` trips this (SIGABRT, line 681) before the
+   scatter checkpoint is reached. Needs: build `equilGrid_` from level zero
+   (not the refined leaf), and make the output-grid/eclOutputGrid path tolerate
+   the already-refined `grid_`.
+4. **The leaf scatter itself** (partition propagate -> stableCellId index set +
+   interfaces -> distribute) — still ahead, behind (3).
+
 ## Status
 - [x] Isolated branch + worktrees + `builds/refined_rbr`; fallback preserved.
 - [x] Root cause + design verified (this doc).
