@@ -82,6 +82,24 @@ instead of throwing at `CpGrid.cpp:252`:
 ## Status
 - [x] Isolated branch + worktrees + `builds/refined_rbr`; fallback preserved.
 - [x] Root cause + design verified (this doc).
-- [ ] Step 1 — serial refine via self-comm.
-- [ ] Step 2 — leaf scatter on stableCellId.
+- [x] **Step 1 — serial refine via self-comm (commit f438eb93).** Added
+      `CpGrid::isDistributed()` (`!distributed_data_.empty()`) and gated the
+      builder's `distributed`/comm on it. `=true` np=2 now refines the full grid
+      (past classifyBox) and reaches the leaf-distribution step; default
+      (`=false`) unchanged.
+- [ ] **Step 2 — leaf scatter (the deep core; next focused chunk).** Refined,
+      lower-risk plan that avoids rewriting the partitioners:
+      1. partition **level 0** with the existing machinery (untouched), then
+         *propagate* to leaf cells via the parent:
+         `leafPart[c] = level0Part[ compressed0(global_cell_[c]) ]` (a leaf
+         cell's `global_cell_` is its parent Cartesian). The LGR cell groups
+         keep each box's coarse cells (hence its refined leaf cells) on one
+         rank, so the propagated partition is rank-interior by construction.
+      2. take the distribution communicator from level zero
+         (`data_[0]->ccobj_` = world), NOT `data_[leaf]->ccobj_` (which is the
+         Stage-1 self-comm).
+      3. `distributeGlobalGrid(leaf, leafPart)` scatters the leaf and builds
+         `cellIndexSet()` with **`stableCellId()`** as the global id (unique;
+         siblings no longer collide), keeping `global_cell_` = parent Cartesian
+         for `distributeFieldProps_`.
 - [ ] Step 3 — wire-up, guards, well check, verification.
