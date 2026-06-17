@@ -378,6 +378,20 @@ namespace Dune
         /// CpGridData::stableCellId().
         std::vector<std::int64_t> stableCellId() const;
 
+        /// @brief Propagate a level-zero cell partition to the leaf cells.
+        ///
+        /// For refine-before-redistribute: the coarse (level-zero) grid is
+        /// partitioned with the existing machinery, then every leaf cell is
+        /// assigned the rank of its coarse parent. A leaf cell's parent is
+        /// recovered from its global_cell_ (which holds the parent's Cartesian
+        /// index) inverted through level zero's globalCell(). Because the LGR
+        /// partition cell groups keep each box's coarse cells on one rank, the
+        /// propagated partition is rank-interior by construction.
+        /// @param level0Part  partition (rank per cell) of the level-zero grid,
+        ///                     indexed by level-zero compressed cell index.
+        /// @return rank per leaf cell, indexed by leaf compressed cell index.
+        std::vector<int> leafPartitionFromLevelZero(const std::vector<int>& level0Part) const;
+
         /// @brief Whether the grid has been scattered across MPI ranks yet.
         /// False for the global (pre-load-balance) grid and for self-comm
         /// reference grids; true once doLoadBalance_/scatterGrid has populated
