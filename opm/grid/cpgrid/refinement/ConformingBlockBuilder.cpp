@@ -29,6 +29,7 @@
 #include <opm/grid/cpgrid/refinement/LeafGridAssembler.hpp>
 #include <opm/grid/cpgrid/refinement/LevelGridAssembler.hpp>
 
+#include <dune/common/parallel/communication.hh>
 #include <dune/common/parallel/mpihelper.hh>
 
 #include <array>
@@ -243,57 +244,90 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
     // nested box can inherit its parent box's presence (see below).
     std::map<std::string,BoxPresence> presenceOf;
 
-    for (std::size_t b = 0; b < requests.size(); ++b) {
-        const auto& req = requests[b];
-        const auto itParent = nameToLevel.find(req.parentGridName);
-        if (itParent == nameToLevel.end()) {
-            throw std::logic_error("Refinement box '" + req.name + "' names parent grid '"
-                + req.parentGridName + "', which has not been built yet. Parent LGRs "
-                "must be ordered before their children.");
-        }
-        const int parentLevel = itParent->second;
-        const LevelGeom& pg = levelGeom[parentLevel];
+    // Per-rank construction of the level grids. In a distributed run this can
+    // throw on one rank (e.g. classifyBox rejecting a box that ends up touching
+    // the overlap region) while other ranks succeed and march on into the leaf
+    // assembly's collectives (cc.max / cc.allgather). Those would then block
+    // forever waiting for the rank that already threw -- the classic asymmetric
+    // exception deadlock. Run the loop under a collective-safe guard below.
+    const auto buildLevelGrids = [&]() {
+        for (std::size_t b = 0; b < requests.size(); ++b) {
+            const auto& req = requests[b];
+            const auto itParent = nameToLevel.find(req.parentGridName);
+            if (itParent == nameToLevel.end()) {
+                throw std::logic_error("Refinement box '" + req.name + "' names parent grid '"
+                    + req.parentGridName + "', which has not been built yet. Parent LGRs "
+                    "must be ordered before their children.");
+            }
+            const int parentLevel = itParent->second;
+            const LevelGeom& pg = levelGeom[parentLevel];
 
-        // In a distributed run, only the rank that owns the (rank-interior)
-        // box refines it; other ranks carry an empty placeholder level grid.
-        // Nested boxes in a distributed run are still serial-only (guarded
-        // above), so a distributed run is always top-level here and classifies
-        // against level zero. The refine-before-redistribute path puts the full
-        // global grid on a single rank and classifies a top-level box by its
-        // cell presence there. A NESTED box addresses cells in its parent LGR's
-        // own (local) Cartesian space, so it cannot be classified against the
-        // global grid; instead it inherits its parent box's presence - a child
-        // fully contained in its parent lives on whatever rank refines the
-        // parent (and the parent-before-child ordering guarantees the parent's
-        // presence is already known). Plain serial stays Owned.
-        const bool nested = (req.parentGridName != "GLOBAL");
-        BoxPresence presence = BoxPresence::Owned;
-        if (distributed) {
-            // Rank-interior model: a nested box's I/J/K are parent-LGR-local, so
-            // it cannot be classified against level zero. A contained child lives
-            // on whichever rank owns its parent box, so inherit the parent's
-            // classification (parent processed before child).
-            presence = nested ? presenceOf.at(req.parentGridName)
-                              : classifyBox(*storage[0], dims_, req);
-        } else if (refineBefore) {
-            presence = nested ? presenceOf.at(req.parentGridName)
-                              : boxCellPresence(*storage[0], dims_, req);
+            // In a distributed run, only the rank that owns the (rank-interior)
+            // box refines it; other ranks carry an empty placeholder level grid.
+            // Nested boxes in a distributed run are still serial-only (guarded
+            // above), so a distributed run is always top-level here and classifies
+            // against level zero. The refine-before-redistribute path puts the full
+            // global grid on a single rank and classifies a top-level box by its
+            // cell presence there. A NESTED box addresses cells in its parent LGR's
+            // own (local) Cartesian space, so it cannot be classified against the
+            // global grid; instead it inherits its parent box's presence - a child
+            // fully contained in its parent lives on whatever rank refines the
+            // parent (and the parent-before-child ordering guarantees the parent's
+            // presence is already known). Plain serial stays Owned.
+            const bool nested = (req.parentGridName != "GLOBAL");
+            BoxPresence presence = BoxPresence::Owned;
+            if (distributed) {
+                // Rank-interior model: a nested box's I/J/K are parent-LGR-local, so
+                // it cannot be classified against level zero. A contained child lives
+                // on whichever rank owns its parent box, so inherit the parent's
+                // classification (parent processed before child).
+                presence = nested ? presenceOf.at(req.parentGridName)
+                                  : classifyBox(*storage[0], dims_, req);
+            } else if (refineBefore) {
+                presence = nested ? presenceOf.at(req.parentGridName)
+                                  : boxCellPresence(*storage[0], dims_, req);
+            }
+            presenceOf[req.name] = presence;
+            RefinedBlockGrdecl childRefined;
+            auto level = (presence == BoxPresence::Owned)
+                ? assembleBlockLevelGrid(*storage[parentLevel], pg.dims,
+                                         pg.coord.data(), pg.zcorn.data(),
+                                         pg.actnum.empty() ? nullptr : pg.actnum.data(),
+                                         req, static_cast<int>(b) + 1, parentLevel,
+                                         storage, comm, &childRefined)
+                : assembleEmptyLevelGrid(req, static_cast<int>(b) + 1, storage, comm);
+            storage.push_back(std::move(level));
+            levelGeom[b + 1] = LevelGeom{ childRefined.dims,
+                                          std::move(childRefined.coord),
+                                          std::move(childRefined.zcorn),
+                                          std::move(childRefined.actnum) };
+            nameToLevel[req.name] = static_cast<int>(b) + 1;
         }
-        presenceOf[req.name] = presence;
-        RefinedBlockGrdecl childRefined;
-        auto level = (presence == BoxPresence::Owned)
-            ? assembleBlockLevelGrid(*storage[parentLevel], pg.dims,
-                                     pg.coord.data(), pg.zcorn.data(),
-                                     pg.actnum.empty() ? nullptr : pg.actnum.data(),
-                                     req, static_cast<int>(b) + 1, parentLevel,
-                                     storage, comm, &childRefined)
-            : assembleEmptyLevelGrid(req, static_cast<int>(b) + 1, storage, comm);
-        storage.push_back(std::move(level));
-        levelGeom[b + 1] = LevelGeom{ childRefined.dims,
-                                      std::move(childRefined.coord),
-                                      std::move(childRefined.zcorn),
-                                      std::move(childRefined.actnum) };
-        nameToLevel[req.name] = static_cast<int>(b) + 1;
+    };
+
+    if (distributed) {
+        // Collective-safe: catch a per-rank failure, agree across ranks with a
+        // single reduction, and throw symmetrically (with the offending rank's
+        // message) so the run fails cleanly instead of deadlocking in the leaf
+        // assembly's collectives below.
+        int localBuildError = 0;
+        std::string localBuildMsg;
+        try {
+            buildLevelGrids();
+        } catch (const std::exception& e) {
+            localBuildError = 1;
+            localBuildMsg = e.what();
+        }
+        Dune::Communication<Dune::MPIHelper::MPICommunicator> cc(comm);
+        if (cc.max(localBuildError) != 0) {
+            throw std::runtime_error(localBuildError != 0
+                ? ("Parallel LGR build failed on rank " + std::to_string(cc.rank())
+                   + ": " + localBuildMsg)
+                : ("Parallel LGR build aborted on rank " + std::to_string(cc.rank())
+                   + " because another rank failed (see that rank's message)."));
+        }
+    } else {
+        buildLevelGrids();
     }
 
     // The nested hierarchy's level grids are built. Nested leaf stitching is
