@@ -1565,7 +1565,12 @@ namespace Dune
         if (distributed_data_.empty()) {
             OPM_THROW(std::runtime_error, "Moving Data only allowed with a load balanced grid!");
         } else {
-            distributed_data_[0]->scatterData(handle, data_[0].get(),
+            // The grid that was distributed is the current (global) view that
+            // scatterGrid worked on, i.e. data_.back(): level zero for an
+            // unrefined grid and the rank-interior path (where data_.back() ==
+            // data_[0]), the refined leaf for refine-before-redistribute. Use it
+            // as the source so the gather addresses the scattered cells.
+            distributed_data_[0]->scatterData(handle, data_.back().get(),
                                               distributed_data_[0].get(),
                                               cellScatterGatherInterface(),
                                               pointScatterGatherInterface());
