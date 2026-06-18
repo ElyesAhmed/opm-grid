@@ -725,6 +725,12 @@ std::vector<std::int64_t> CpGrid::stableCellId() const
     return currentLeafData().stableCellId();
 }
 
+void CpGrid::poisonRefinedGlobalCell(int sentinel)
+{
+    // Poison the leaf (the view the simulator solves on).
+    currentData().back()->poisonRefinedGlobalCell(sentinel);
+}
+
 std::vector<int> CpGrid::leafPartitionFromLevelZero(const std::vector<int>& level0Part) const
 {
     const auto& level0 = *currentData().front();

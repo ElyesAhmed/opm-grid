@@ -117,6 +117,19 @@ std::vector<std::int64_t> CpGridData::stableCellId() const
     return ids;
 }
 
+void CpGridData::poisonRefinedGlobalCell(int sentinel)
+{
+    if (child_to_parent_cells_.empty()) {
+        return; // no refined cells on this grid (e.g. an actual level-zero grid)
+    }
+    const std::size_t n = std::min(global_cell_.size(), child_to_parent_cells_.size());
+    for (std::size_t c = 0; c < n; ++c) {
+        if (child_to_parent_cells_[c][0] != -1) {
+            global_cell_[c] = sentinel;
+        }
+    }
+}
+
 #if HAVE_MPI
 template<class InterfaceMap>
 void freeInterfaces(InterfaceMap& map)

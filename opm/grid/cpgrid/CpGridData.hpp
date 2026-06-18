@@ -414,7 +414,16 @@ public:
     /// regardless of which rank built the cell.
     std::vector<std::int64_t> stableCellId() const;
 
-
+    /// Canary for LGR field-property handling. Set the global Cartesian index
+    /// of every refined cell to @p sentinel (a negative, deliberately invalid
+    /// value). Refined cells inherit their parent's properties once, at
+    /// materialization (eclState.set_active_indices / building per-cell arrays);
+    /// after that they are expected to be consumed only as per-cell arrays. Any
+    /// code that instead re-derives a refined cell's property from its (parent)
+    /// Cartesian index will then index out of bounds and fail loudly instead of
+    /// silently returning the parent's value. For a correct run (no late
+    /// re-derivation) poisoning is harmless. Opt-in / diagnostic only.
+    void poisonRefinedGlobalCell(int sentinel);
 
 
 
