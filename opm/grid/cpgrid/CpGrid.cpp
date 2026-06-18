@@ -401,11 +401,14 @@ CpGrid::scatterGrid(EdgeWeightMethod method,
         comm().barrier();
 
         if (refineBeforeLeaf) {
-            // Stage 2b checkpoint: the level-zero partition is computed
-            // (computedCellPart, full on rank 0). Propagate it to the leaf and
-            // report the per-rank leaf-cell counts as a sanity check. The leaf
-            // data distribution (parallel index set / interfaces keyed on
-            // stableCellId, then scatter) is the next increment.
+            // Stage 2c: the level-zero partition is computed (computedCellPart,
+            // full on rank 0). Propagate it to the leaf, then distribute the
+            // LEAF data (not level zero) with the shared scatter machinery
+            // below. createListsFromParts(level=-1) iterates the leaf and keys
+            // the export/import lists on the leaf's own (unique, hierarchical)
+            // global ids; addOverlapLayer / distributeGlobalGrid further down
+            // then act on the leaf because we redirect selectedLevel / level /
+            // computedCellPart at it.
             const std::vector<int> leafPart = leafPartitionFromLevelZero(computedCellPart);
             if (cc.rank() == 0) {
                 std::vector<int> counts(cc.size(), 0);
@@ -419,10 +422,41 @@ CpGrid::scatterGrid(EdgeWeightMethod method,
                 }
                 Opm::OpmLog::info(msg);
             }
-            OPM_THROW(std::logic_error,
-                      "refine-before-redistribute Stage 2b: leaf partition computed and "
-                      "propagated (per-rank counts logged); leaf data distribution is the "
-                      "next increment.");
+
+            // The serial refine-before leaf was assembled with a self-
+            // communicator, so assembleLeafGrid's parallel branch (size>1) was
+            // skipped and the leaf has no cell index set. distributeGlobalGrid
+            // needs one on the source (view) grid to map a cell's local index to
+            // its global id. Build the identity index set local i -> global id i:
+            // rank 0 owns the whole serial leaf, so these ids are globally unique
+            // and, being equal to the local index, keep the export list in
+            // local-index order (matching createListsFromParts(level==-1) and the
+            // send-interface setup).
+            {
+                auto& leafData = *data_.back();
+                auto& cis = leafData.cellIndexSet();
+                cis.beginResize();
+                for (int i = 0, n = leafData.size(0); i < n; ++i) {
+                    cis.add(i, ParallelIndexSet::LocalIndex(i, AttributeSet::owner, true));
+                }
+                cis.endResize();
+            }
+
+            // Build the leaf export/import lists from the propagated partition.
+            std::tie(computedCellPart, wells_on_proc, exportList, importList, wellConnections) =
+                cpgrid::createListsFromParts(*this, wells, possibleFutureConnections,
+                                             /* transmissibilities = */ nullptr, leafPart,
+                                             allowDistributedWells, /* gridAndWells = */ nullptr,
+                                             /* level = */ -1);
+
+            // Redirect the shared scatter machinery (below) at the leaf:
+            //  - addOverlapLayer needs the leaf partition + leaf level (-1),
+            //  - the statistics / distributeGlobalGrid read data_[selectedLevel],
+            //    which must be the leaf grid (the last entry in data_).
+            computedCellPart = leafPart;
+            selectedLevel = static_cast<int>(data_.size()) - 1;
+            level = -1;
+            // fall through to the common scatter code below (no early throw).
         }
 
         // first create the overlap
