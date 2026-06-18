@@ -935,9 +935,16 @@ namespace Dune
                     double imbalanceTol = 1.1,
                     bool allowDistributedWells = false)
         {
+            // refine-before-redistribute: if the grid is already refined at
+            // load-balance time (maxLevel() > 0) we are on the experimental
+            // refine-then-distribute path - distribute the leaf (level == -1)
+            // so scatterGrid takes the leaf scaffolding. In every other flow
+            // the grid is still coarse here (rank-interior refines later, in
+            // addLgrs()), so this stays level 0 and nothing else changes.
+            const int balanceLevel = (this->maxLevel() > 0) ? -1 : 0;
             auto ret = scatterGrid(method, ownersFirst, wells, possibleFutureConnections, serialPartitioning, transmissibilities,
                                    addCornerCells, overlapLayers, partitionMethod, imbalanceTol, allowDistributedWells,
-                                   /* input_cell_parts = */ std::vector<int>{}, /* level = */ 0);
+                                   /* input_cell_parts = */ std::vector<int>{}, /* level = */ balanceLevel);
             using std::get;
             if (get<0>(ret))
             {

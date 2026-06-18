@@ -25,6 +25,7 @@
 #include <opm/grid/CpGrid.hpp>
 #include <opm/grid/cpgrid/CpGridData.hpp>
 #include <opm/grid/cpgrid/refinement/EdgeConformal.hpp>
+#include <opm/grid/cpgrid/refinement/GridStateWriter.hpp>
 #include <opm/grid/cpgrid/refinement/LeafGridAssembler.hpp>
 #include <opm/grid/cpgrid/refinement/LevelGridAssembler.hpp>
 
@@ -194,6 +195,11 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
     // leaf assembly does no collectives, producing the full refined grid a
     // serial run yields, ready to be distributed afterwards.
     const bool distributed = grid.comm().size() > 1 && grid.isDistributed();
+    // Capture the grid's actual (world) communicator before any new level or
+    // leaf grid is pushed - CpGrid::comm() reads the back() entry of the
+    // storage, which is the coarse level-zero grid at this point and therefore
+    // still carries the world communicator on every rank.
+    const auto worldComm = grid.comm();
     // Use a self-communicator for serial refinement (refine-before-redistribute
     // and the self-comm output/reference grid) so no operation is collective
     // over the world communicator; the distributed simulation grid keeps the
@@ -235,6 +241,19 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
         edgeConformalizeLeaf(*leaf);
     }
     storage.push_back(std::move(leaf));
+
+    if (refineBefore) {
+        // The new level grids (indices 1..N) and the leaf (back) were assembled
+        // with a self-communicator so the serial refinement does no collectives.
+        // Restore the world communicator on them: CpGrid::comm() reads the leaf,
+        // so without this the refined grid would report a size-1 communicator
+        // and the subsequent load balancing would treat it as a serial grid and
+        // skip distributing the refined leaf. Level zero (index 0) is the
+        // pre-existing coarse grid and already carries the world communicator.
+        for (std::size_t i = 1; i < storage.size(); ++i) {
+            GridStateWriter::setCommunicator(*storage[i], worldComm);
+        }
+    }
 }
 
 } // namespace Refinement

@@ -87,6 +87,11 @@ void GridStateWriter::setRefinementMaxLevel(Data& grid, int maxLevel)
     grid.refinement_max_level_ = maxLevel;
 }
 
+void GridStateWriter::setCommunicator(Data& grid, const Data::Communication& comm)
+{
+    grid.ccobj_ = comm;
+}
+
 std::vector<std::array<int,8>>& GridStateWriter::cellToPoint(Data& grid)
 {
     return grid.cell_to_point_;

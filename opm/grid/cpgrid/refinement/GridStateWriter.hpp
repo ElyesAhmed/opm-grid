@@ -73,6 +73,13 @@ struct GridStateWriter
     static void setIndexSet(Data& grid, std::size_t numCells, std::size_t numPoints);
     static void setRefinementMaxLevel(Data& grid, int maxLevel);
 
+    /// Set the collective communicator (ccobj_) a grid reports. Used by the
+    /// refine-before-redistribute path: the new level grids and the leaf are
+    /// assembled with a self-communicator (collective-free serial refinement),
+    /// then restored to the world communicator here so the refined grid still
+    /// reports the full parallel communicator and can be load balanced.
+    static void setCommunicator(Data& grid, const Data::Communication& comm);
+
     /// Topology/geometry table access for assembling a grid (and reading
     /// the tables of source grids during assembly).
     static std::vector<std::array<int,8>>& cellToPoint(Data& grid);
