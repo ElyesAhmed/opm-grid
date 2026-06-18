@@ -198,11 +198,19 @@ void addPartitionCellGroups(GraphOfGrid<Dune::CpGrid>& gog)
         return;
     }
     // Groups are given as global (Cartesian) cell ids; the graph uses
-    // compressed ids. Build the inverse map once.
-    const auto& cpgdim = grid.logicalCartesianSize();
+    // compressed ids. Build the inverse map once, in the level-zero index
+    // space - the same space the graph vertices and WellConnections::init use
+    // (currentData().front()). This is correct both for the rank-interior path
+    // (leaf == level zero) and for refine-before-redistribute, where the leaf
+    // is refined but the partition graph and the cell groups are level-zero
+    // Cartesian cells; using the leaf globalCell/numCells there would key the
+    // groups in the leaf index space and they would not match the graph.
+    const auto& level0 = *grid.currentData().front();
+    const auto& cpgdim = level0.logicalCartesianSize();
+    const auto& globalCell = level0.globalCell();
     std::vector<int> cartesian_to_compressed(cpgdim[0]*cpgdim[1]*cpgdim[2], -1);
-    for (int i = 0; i < grid.numCells(); ++i) {
-        cartesian_to_compressed[grid.globalCell()[i]] = i;
+    for (std::size_t i = 0; i < globalCell.size(); ++i) {
+        cartesian_to_compressed[globalCell[i]] = static_cast<int>(i);
     }
     for (const auto& group : groups) {
         std::set<int> compressed;
