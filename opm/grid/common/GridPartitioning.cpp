@@ -709,11 +709,25 @@ namespace cpgrid
             const auto& localIdSet = grid.localIdSet();
             const auto& indexSet = (level==-1)? grid.leafIndexSet() : grid.levelIndexSet(level);
 
+            // refine-before-redistribute leaf scatter: when distributing a
+            // refined leaf (level == -1 with maxLevel() > 0), the leaf's
+            // hierarchical global/local ids are NOT in leaf-index order. The
+            // scatter machinery keys the export list on the cell index for cells
+            // that stay on root (makeImportAndExportLists) and for the overlap
+            // (addOverlapLayer), and setupSendInterface assumes the sorted
+            // export list visits cells in local-index order. That invariant
+            // holds at level zero only because there id == index; use the leaf
+            // index as the id here so it also holds for the refined leaf. Rank 0
+            // owns the whole serial leaf, so the indices are globally unique.
+            // For every other caller (unrefined leaf / a real level) id == index
+            // already, so this is a no-op.
+            const bool leafScatter = (level == -1) && (grid.maxLevel() > 0);
+
             for (; cell != cellEnd; ++cell)
             {
-                const auto& gid = globalIdSet.id(*cell);
-                const auto& lid = localIdSet.id(*cell);
-                const auto& index = indexSet.index(cell);
+                const int index = indexSet.index(cell);
+                const int gid = leafScatter ? index : static_cast<int>(globalIdSet.id(*cell));
+                const int lid = leafScatter ? index : static_cast<int>(localIdSet.id(*cell));
                 const auto& part = parts[index];
                 if (part != 0 )
                 {
