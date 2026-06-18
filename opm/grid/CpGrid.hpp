@@ -392,6 +392,13 @@ namespace Dune
         /// @return rank per leaf cell, indexed by leaf compressed cell index.
         std::vector<int> leafPartitionFromLevelZero(const std::vector<int>& level0Part) const;
 
+        /// @brief Canary for LGR field-property handling: poison every refined
+        /// leaf cell's global Cartesian index with a negative sentinel so any
+        /// late re-derivation of its properties from the (parent) Cartesian
+        /// index fails loudly. Diagnostic / opt-in; see
+        /// CpGridData::poisonRefinedGlobalCell.
+        void poisonRefinedGlobalCell(int sentinel = -1);
+
         /// @brief Whether the grid has been scattered across MPI ranks yet.
         /// False for the global (pre-load-balance) grid and for self-comm
         /// reference grids; true once doLoadBalance_/scatterGrid has populated
