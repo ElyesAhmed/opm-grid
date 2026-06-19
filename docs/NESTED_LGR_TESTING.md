@@ -60,13 +60,29 @@ that test's header comment:
 `opm-tests/lgr/SPE1CASE1_CARFIN1_NESTED.DATA` is a `CARFIN` inside `CARFIN1`'s
 box. Serial only for now (parallel nested is Phase D).
 
+**Contained variant (works):** `opm-tests/lgr/SPE1CASE1_CARFIN1_NESTED_CONTAINED.DATA`
+— NEST1 is strictly interior to LGR1 (and reaches LGR1-local k=8, beyond the
+global NZ=3, exercising the parent-relative CARFIN validation, opm-common
+`LgrCollection::addLgr`). It parses, builds the 3-level leaf, and runs the SOLVE
+to completion. ECL output of nested LGRs is not done yet, so run with output off:
+
 ```sh
 builds/refined_nested/opm-simulators/bin/flow_blackoil \
-  opm-tests/lgr/SPE1CASE1_CARFIN1_NESTED.DATA --parsing-strictness=low --output-dir=/tmp/nested
+  opm-tests/lgr/SPE1CASE1_CARFIN1_NESTED_CONTAINED.DATA \
+  --parsing-strictness=low --enable-ecl-output=false --output-dir=/tmp/nested
 ```
-Until Phase C lands this throws the Phase-C "not implemented" message during
-grid construction. After Phase C it should run to completion; compare it against
-a reference and confirm volume/material balance.
+Expect `End of simulation`.
+
+**Bundled `SPE1CASE1_CARFIN1_NESTED.DATA`** has a NEST that *touches* LGR1's
+boundary in k, so it is (correctly) rejected with the containment message;
+boundary-touching nesting is a future extension.
+
+**Known remaining (nested ECL output):** with output ON, a nested deck throws
+opm-common `EclipseGrid::compressedVector` "Input vector must have full size" —
+the per-LGR INIT/restart property extraction hands LGR1's `EclipseGridLGR` a
+NEST-sized vector (e.g. 896 NEST cells vs LGR1's 324) instead of LGR1's own
+cells. Nested ECL output needs per-level property derivation across the
+LGR1->NEST hierarchy (a separate subsystem, like the parallel-LGR output).
 
 ## 4. Regression — current behavior must not change
 
