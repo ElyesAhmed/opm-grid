@@ -628,25 +628,80 @@ BOOST_AUTO_TEST_CASE(nestedFullyContainedBuilds)
     Dune::CpGrid grid;
     auto rawParent = parent.raw();
     grid.processEclipseFormat(rawParent, false);
+    const double volumeBefore = totalVolume(grid);
 
     BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
         parent.dims, parent.coord, parent.zcorn, parent.actnum));
 
-    // LGR1: GLOBAL cells i:1-2, j:1, k:1 (2x1x1) refined 3x3x3 -> LGR1-local 6x3x3.
-    // NEST1: LGR1-local i:1-4, j:1, k:1 -> strictly interior to LGR1 (touches no
-    //        LGR1 boundary face), refined 2x2x2, parent grid "LGR1". Passes the
-    //        containment check and reaches the outer-composition boundary.
-    const auto isOuterCompositionPending = [](const std::logic_error& e) {
-        return std::string(e.what()).find("outer level-zero leaf")
-               != std::string::npos;
-    };
-    BOOST_CHECK_EXCEPTION(
-        grid.addLgrsUpdateLeafView({{3,3,3}, {2,2,2}},
-                                   {{1,1,1}, {1,1,1}},
-                                   {{3,2,2}, {5,2,2}},
-                                   {"LGR1", "NEST1"},
-                                   {"GLOBAL", "LGR1"}),
-        std::logic_error, isOuterCompositionPending);
+    // LGR1: GLOBAL cells i:1-2, j:1, k:1 (2x1x1) refined 3x3x3 -> LGR1-local 6x3x3 = 54.
+    // NEST1: LGR1-local i:1-4, j:1, k:1 (4 LGR1 cells) refined 2x2x2 = 32 -> strictly
+    //        interior to LGR1 (touches no LGR1 boundary face), parent grid "LGR1".
+    grid.addLgrsUpdateLeafView({{3,3,3}, {2,2,2}},
+                               {{1,1,1}, {1,1,1}},
+                               {{3,2,2}, {5,2,2}},
+                               {"LGR1", "NEST1"},
+                               {"GLOBAL", "LGR1"});
+
+    BOOST_REQUIRE_EQUAL(grid.maxLevel(), 2);
+    BOOST_CHECK_EQUAL(grid.getLgrNameToLevel().at("LGR1"), 1);
+    BOOST_CHECK_EQUAL(grid.getLgrNameToLevel().at("NEST1"), 2);
+    BOOST_CHECK_CLOSE(totalVolume(grid), volumeBefore, 1e-8);
+
+    // Father chain: NEST1 cell (level 2) -> LGR1 cell (level 1) -> GLOBAL (level 0).
+    int nestCount = 0, lgr1Count = 0, coarseCount = 0;
+    for (const auto& element : Dune::elements(grid.leafGridView())) {
+        const int lvl = element.level();
+        if (lvl == 2) {
+            ++nestCount;
+            const auto father = element.father();
+            BOOST_CHECK_EQUAL(father.level(), 1);
+            BOOST_REQUIRE(father.hasFather());
+            BOOST_CHECK_EQUAL(father.father().level(), 0);
+            BOOST_CHECK_CLOSE(element.geometryInFather().volume(), 1.0/8.0, 1e-9);
+        }
+        else if (lvl == 1) {
+            ++lgr1Count;
+            BOOST_CHECK_EQUAL(element.father().level(), 0);
+            BOOST_CHECK_CLOSE(element.geometryInFather().volume(), 1.0/27.0, 1e-9);
+        }
+        else {
+            ++coarseCount;
+            BOOST_CHECK(!element.hasFather());
+        }
+    }
+    BOOST_CHECK_EQUAL(nestCount, 32);          // 4 LGR1 cells x 2x2x2
+    BOOST_CHECK_EQUAL(lgr1Count, 54 - 4);      // 6x3x3 minus the 4 NEST refined away
+    BOOST_CHECK_EQUAL(coarseCount, 4*3*3 - 2); // GLOBAL minus the 2 LGR1 refined away
+    BOOST_CHECK_EQUAL(grid.size(0), nestCount + lgr1Count + coarseCount);
+
+    // Conformal leaf: every interior face seen from both sides with matching area.
+    std::map<std::pair<int,int>, int> pairCount;
+    for (const auto& element : Dune::elements(grid.leafGridView())) {
+        for (const auto& intersection : Dune::intersections(grid.leafGridView(), element)) {
+            if (intersection.neighbor()) {
+                const int inside = intersection.inside().index();
+                const int outside = intersection.outside().index();
+                BOOST_REQUIRE(inside != outside);
+                pairCount[{std::min(inside, outside), std::max(inside, outside)}] += 1;
+            }
+        }
+    }
+    for (const auto& [cells, count] : pairCount) {
+        BOOST_CHECK_EQUAL(count, 2);
+    }
+
+    // Global ids unique over leaf cells and points (delegated across 3 levels).
+    const auto& ids = grid.globalIdSet();
+    std::set<std::int64_t> cellIds;
+    for (const auto& element : Dune::elements(grid.leafGridView())) {
+        cellIds.insert(ids.id(element));
+    }
+    BOOST_CHECK_EQUAL(cellIds.size(), static_cast<std::size_t>(grid.size(0)));
+    std::set<std::int64_t> pointIds;
+    for (const auto& vertex : Dune::vertices(grid.leafGridView())) {
+        pointIds.insert(ids.id(vertex));
+    }
+    BOOST_CHECK_EQUAL(pointIds.size(), static_cast<std::size_t>(grid.size(3)));
 }
 
 BOOST_AUTO_TEST_CASE(faultInsideBoxEndToEnd)
