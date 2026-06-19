@@ -936,6 +936,16 @@ assembleNestedLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
         if (parentBoxOf[b] < 0) {
             continue;
         }
+        // Rank-interior ("refine-after") model: a box that is not present on this
+        // rank is an empty placeholder whose parent LGR level grid is also empty,
+        // so levelGeom carries no dims to validate against (validating here would
+        // throw spuriously on the ranks that do not own the box, deadlocking
+        // against the ranks that do). The box is validated on the rank that owns
+        // it. A contained child is always co-located with its parent, so the
+        // child's own emptiness is a sufficient test.
+        if (boxes[b].level->size(0) == 0) {
+            continue;
+        }
         if (parentBoxOf[parentBoxOf[b]] >= 0) {
             throw std::logic_error("Nested LGR deeper than one level is not implemented "
                 "yet (docs/NESTED_LGR_PLAN.md Phase C).");
@@ -1325,6 +1335,71 @@ assembleNestedLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
                                                          leafCornersPtr,
                                                          leafCellToPoint[cell].data());
     }
+
+    // Build the leaf's parallel cell index set, remote indices, partition types
+    // and communication interfaces in the rank-interior ("refine-after") model,
+    // so the distributed leaf view knows the cells it owns (coarse + all nested
+    // refined cells on this rank) and overlap cells take part in collective
+    // communication. This mirrors the single-level assembleLeafGrid branch:
+    // coarse leaf cells inherit their level-zero global index/attribute; every
+    // refined cell (any non-level-0 source, i.e. all nested levels) is rank-
+    // interior (owner only) and gets a fresh, globally unique index in a per-rank
+    // range above all coarse global ids, so remote-index matching never pairs it
+    // with a cell on another rank. In refine-before-redistribute the leaf is
+    // assembled with a self-communicator (cc.size() == 1), so this is skipped and
+    // the distribution happens later in scatterGrid.
+#if HAVE_MPI
+    Dune::Communication<Dune::MPIHelper::MPICommunicator> cc(comm);
+    if (cc.size() > 1) {
+        using ParallelIndexSet = CpGridData::ParallelIndexSet;
+        using AttributeSet = CpGridData::AttributeSet;
+
+        std::vector<int> leafCellGlobalId(numLeafCells, -1);
+        std::vector<AttributeSet> leafCellAttr(numLeafCells, AttributeSet::owner);
+
+        int localMaxCoarseGlobal = 0;
+        for (const auto& entry : level0.cellIndexSet()) {
+            const int l0local = entry.local().local();
+            localMaxCoarseGlobal = std::max(localMaxCoarseGlobal, static_cast<int>(entry.global()));
+            const int leafC = leafIdxOf[0][l0local];   // -1 if refined away
+            if (leafC >= 0) {
+                leafCellGlobalId[leafC] = entry.global();
+                leafCellAttr[leafC] = entry.local().attribute();
+            }
+        }
+
+        int numRefinedLocal = 0;
+        for (int cell = 0; cell < numLeafCells; ++cell) {
+            if (leafCells[cell].grid != 0) ++numRefinedLocal;
+        }
+        const int globalMaxCoarse = cc.max(localMaxCoarseGlobal);
+        std::vector<int> refinedCounts(cc.size(), 0);
+        cc.allgather(&numRefinedLocal, 1, refinedCounts.data());
+        int refinedNext = globalMaxCoarse + 1;
+        for (int r = 0; r < cc.rank(); ++r) {
+            refinedNext += refinedCounts[r];
+        }
+        for (int cell = 0; cell < numLeafCells; ++cell) {
+            if (leafCells[cell].grid != 0) {
+                leafCellGlobalId[cell] = refinedNext++;
+                leafCellAttr[cell] = AttributeSet::owner;
+            }
+        }
+
+        auto& cis = leaf->cellIndexSet();
+        cis.beginResize();
+        for (int cell = 0; cell < numLeafCells; ++cell) {
+            cis.add(leafCellGlobalId[cell],
+                    ParallelIndexSet::LocalIndex(cell, leafCellAttr[cell], true));
+        }
+        cis.endResize();
+
+        leaf->cellRemoteIndices().template rebuild<false>();
+        leaf->computeCellPartitionType();
+        leaf->computePointPartitionType();
+        leaf->computeCommunicationInterfaces(numLeafCorners);
+    }
+#endif
 
     // ----- Leaf metadata ---------------------------------------------------
     GridStateWriter::setLogicalCartesianSize(*leaf, dims0);

@@ -219,17 +219,15 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
     const bool refineBefore = grid.comm().size() > 1 && !grid.isDistributed();
 
     // Nested refinement (parent != GLOBAL): build the level grids over their
-    // parent LGR, but the leaf assembler does not yet stitch more than one
-    // level of refinement (see docs/NESTED_LGR_PLAN.md Phase C). Parallel
-    // nested is a separate track (Phase D). Detect both up front.
+    // parent LGR and stitch them with assembleNestedLeafGrid. A fully contained
+    // nested box rides on its parent rank in both parallel models (the rank-
+    // interior "refine-after" path and refine-before-redistribute), so detect
+    // nesting and route to the nested assembler; the containment constraints are
+    // enforced inside assembleNestedLeafGrid.
     bool anyNested = false;
     for (const auto& req : requests) {
         if (req.parentGridName != "GLOBAL") {
             anyNested = true;
-            if (distributed) {
-                throw std::logic_error("Nested refinement ('" + req.name + "' with parent '"
-                    + req.parentGridName + "') is not supported in parallel yet.");
-            }
         }
     }
 
@@ -271,7 +269,12 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
         const bool nested = (req.parentGridName != "GLOBAL");
         BoxPresence presence = BoxPresence::Owned;
         if (distributed) {
-            presence = classifyBox(*storage[0], dims_, req);
+            // Rank-interior model: a nested box's I/J/K are parent-LGR-local, so
+            // it cannot be classified against level zero. A contained child lives
+            // on whichever rank owns its parent box, so inherit the parent's
+            // classification (parent processed before child).
+            presence = nested ? presenceOf.at(req.parentGridName)
+                              : classifyBox(*storage[0], dims_, req);
         } else if (refineBefore) {
             presence = nested ? presenceOf.at(req.parentGridName)
                               : boxCellPresence(*storage[0], dims_, req);
