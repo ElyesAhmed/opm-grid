@@ -241,6 +241,9 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
     std::vector<LevelGeom> levelGeom(requests.size() + 1);
     levelGeom[0] = LevelGeom{ dims_, coord_, zcorn_, actnum_ };
     std::map<std::string,int> nameToLevel{ {"GLOBAL", 0} };
+    // Per-box presence (refine-before-redistribute), keyed by box name, so a
+    // nested box can inherit its parent box's presence (see below).
+    std::map<std::string,BoxPresence> presenceOf;
 
     for (std::size_t b = 0; b < requests.size(); ++b) {
         const auto& req = requests[b];
@@ -255,16 +258,25 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
 
         // In a distributed run, only the rank that owns the (rank-interior)
         // box refines it; other ranks carry an empty placeholder level grid.
-        // Nested boxes are serial-only (guarded above), so a distributed run is
-        // always top-level here and classifies against level zero. The refine-
-        // before-redistribute path (also top-level only - nested+parallel threw
-        // above) classifies by cell presence. Plain serial / nested stay Owned.
+        // Nested boxes in a distributed run are still serial-only (guarded
+        // above), so a distributed run is always top-level here and classifies
+        // against level zero. The refine-before-redistribute path puts the full
+        // global grid on a single rank and classifies a top-level box by its
+        // cell presence there. A NESTED box addresses cells in its parent LGR's
+        // own (local) Cartesian space, so it cannot be classified against the
+        // global grid; instead it inherits its parent box's presence - a child
+        // fully contained in its parent lives on whatever rank refines the
+        // parent (and the parent-before-child ordering guarantees the parent's
+        // presence is already known). Plain serial stays Owned.
+        const bool nested = (req.parentGridName != "GLOBAL");
         BoxPresence presence = BoxPresence::Owned;
         if (distributed) {
             presence = classifyBox(*storage[0], dims_, req);
         } else if (refineBefore) {
-            presence = boxCellPresence(*storage[0], dims_, req);
+            presence = nested ? presenceOf.at(req.parentGridName)
+                              : boxCellPresence(*storage[0], dims_, req);
         }
+        presenceOf[req.name] = presence;
         RefinedBlockGrdecl childRefined;
         auto level = (presence == BoxPresence::Owned)
             ? assembleBlockLevelGrid(*storage[parentLevel], pg.dims,
