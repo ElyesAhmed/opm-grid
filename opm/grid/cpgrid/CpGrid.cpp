@@ -1152,6 +1152,12 @@ unsigned int CpGrid::ghostSize(int, int) const {
     return 0;
 }
 
+bool CpGrid::leafHasParentCellIndices() const
+{
+    return current_data_ && !current_data_->empty()
+        && !current_data_->back()->cell_to_idxInParentCell_.empty();
+}
+
 unsigned int CpGrid::numBoundarySegments() const
 {
     if( uniqueBoundaryIds() )
