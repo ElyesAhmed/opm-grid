@@ -235,13 +235,9 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
 
     // Parent corner-point description per built level (index 0 = GLOBAL base,
     // index b+1 = the level grid of request b). A nested box is refined from
-    // its parent level's resampled geometry, not the global grid.
-    struct LevelGeom {
-        std::array<int,3> dims{};
-        std::vector<double> coord;
-        std::vector<double> zcorn;
-        std::vector<int> actnum;
-    };
+    // its parent level's resampled geometry, not the global grid. LevelGeom is
+    // declared in LeafGridAssembler.hpp so the nested leaf assembler can reuse
+    // the per-level geometry.
     std::vector<LevelGeom> levelGeom(requests.size() + 1);
     levelGeom[0] = LevelGeom{ dims_, coord_, zcorn_, actnum_ };
     std::map<std::string,int> nameToLevel{ {"GLOBAL", 0} };
@@ -285,19 +281,15 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
         nameToLevel[req.name] = static_cast<int>(b) + 1;
     }
 
-    if (anyNested) {
-        // Level grids for the nested hierarchy are in place; the recursive
-        // leaf stitching is the remaining work.
-        throw std::logic_error("Nested LGR leaf assembly is not implemented yet "
-            "(docs/NESTED_LGR_PLAN.md Phase C): the nested level grids were built, "
-            "but assembleLeafGrid still stitches a single level of refinement over "
-            "GLOBAL.");
-    }
-
-    auto leaf = assembleLeafGrid(storage, requests, dims_,
-                                 coord_.data(), zcorn_.data(),
-                                 actnum_.empty() ? nullptr : actnum_.data(),
-                                 comm);
+    // The nested hierarchy's level grids are built. Nested leaf stitching is
+    // isolated in assembleNestedLeafGrid so the single-level assembler below
+    // (and therefore every GLOBAL-parent deck) stays byte-identical.
+    std::shared_ptr<Dune::cpgrid::CpGridData> leaf = anyNested
+        ? assembleNestedLeafGrid(storage, requests, levelGeom, comm)
+        : assembleLeafGrid(storage, requests, dims_,
+                           coord_.data(), zcorn_.data(),
+                           actnum_.empty() ? nullptr : actnum_.data(),
+                           comm);
     if (edgeConformal_) {
         edgeConformalizeLeaf(*leaf);
     }

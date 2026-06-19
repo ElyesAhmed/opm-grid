@@ -556,7 +556,7 @@ BOOST_AUTO_TEST_CASE(nestedRefinementReachesLeafBoundary)
     // LGR1: 2x1x1 GLOBAL parents -> local refined dims 4x2x2.
     // NEST1: a box inside LGR1's local space, parent "LGR1".
     const auto isNestedLeafBoundary = [](const std::logic_error& e) {
-        return std::string(e.what()).find("Nested LGR leaf assembly is not implemented")
+        return std::string(e.what()).find("Phase C")
                != std::string::npos;
     };
     BOOST_CHECK_EXCEPTION(
@@ -635,7 +635,7 @@ BOOST_AUTO_TEST_CASE(nestedFullyContainedBuilds)
     // NEST1: LGR1-local i:1-4, j:1, k:1 -> strictly interior to LGR1 (touches no
     //        LGR1 boundary face), refined 2x2x2, parent grid "LGR1".
     const auto isNestedNotImplemented = [](const std::logic_error& e) {
-        return std::string(e.what()).find("Nested LGR leaf assembly is not implemented")
+        return std::string(e.what()).find("Phase C")
                != std::string::npos;
     };
     BOOST_CHECK_EXCEPTION(

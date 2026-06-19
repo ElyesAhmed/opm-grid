@@ -865,5 +865,58 @@ assembleLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
     return leaf;
 }
 
+std::shared_ptr<CpGridData>
+assembleNestedLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
+                       const std::vector<BlockRefinement>& requests,
+                       const std::vector<LevelGeom>& levelGeom,
+                       Dune::MPIHelper::MPICommunicator comm)
+{
+    const int numBoxes = static_cast<int>(requests.size());
+
+    // Build the box tree from parentGridName (level index of box b is b+1).
+    std::map<std::string,int> nameToBox;
+    for (int b = 0; b < numBoxes; ++b) {
+        nameToBox[requests[b].name] = b;
+    }
+    std::vector<int> parentBoxOf(numBoxes, -1);   // -1 == parent is GLOBAL (level 0)
+    for (int b = 0; b < numBoxes; ++b) {
+        if (requests[b].parentGridName != "GLOBAL") {
+            parentBoxOf[b] = nameToBox.at(requests[b].parentGridName);
+        }
+    }
+
+    // First supported case: one level of nesting, each nested child fully
+    // contained in its parent LGR. Reuse the single-level assembler to refine
+    // the parent LGR's (Cartesian, local-space) level grid by the contained
+    // child - the child's childToParent already points at the parent LGR's
+    // cells (Phase B), so this is the same construction with the parent LGR
+    // level grid as the base.
+    for (int b = 0; b < numBoxes; ++b) {
+        if (parentBoxOf[b] < 0) {
+            continue;                              // top-level: outer assembly
+        }
+        const int p = parentBoxOf[b];
+        if (parentBoxOf[p] >= 0) {
+            throw std::logic_error("Nested LGR deeper than one level is not implemented "
+                "yet (docs/NESTED_LGR_PLAN.md Phase C).");
+        }
+        std::vector<std::shared_ptr<CpGridData>> inner{ storage[p + 1], storage[b + 1] };
+        std::vector<BlockRefinement> innerReq{ requests[b] };
+        const LevelGeom& pg = levelGeom[p + 1];
+        auto innerLeaf = assembleLeafGrid(inner, innerReq, pg.dims,
+                                          pg.coord.data(), pg.zcorn.data(),
+                                          pg.actnum.empty() ? nullptr : pg.actnum.data(),
+                                          comm);
+        // innerLeaf is the parent LGR refined by its contained child. Composing
+        // this with the outer level-zero leaf is the remaining step.
+        (void) innerLeaf;
+    }
+
+    throw std::logic_error("Nested LGR leaf assembly: the per-parent nested refinement "
+        "builds (Phase C inner reuse via assembleLeafGrid on the parent LGR level grid), "
+        "but composing it with the outer level-zero leaf is the remaining step "
+        "(docs/NESTED_LGR_PLAN.md Phase C).");
+}
+
 } // namespace Refinement
 } // namespace Opm
