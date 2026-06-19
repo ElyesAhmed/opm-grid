@@ -900,6 +900,47 @@ assembleNestedLeafGrid(std::vector<std::shared_ptr<CpGridData>>& storage,
             throw std::logic_error("Nested LGR deeper than one level is not implemented "
                 "yet (docs/NESTED_LGR_PLAN.md Phase C).");
         }
+
+        // Containment checks. A nested box's IJK is parent-LGR-local (in the
+        // parent LGR's refined Cartesian space, dims = levelGeom[p+1].dims).
+        // endIJK is exclusive, so the box spans local cells [startIJK, endIJK).
+        const auto& req = requests[b];
+        const auto& pdims = levelGeom[p + 1].dims;
+        const auto ijkRange = [&]() {
+            std::string s;
+            for (int d = 0; d < 3; ++d) {
+                s += (d ? " x [" : "[") + std::to_string(req.startIJK[d]) + ","
+                   + std::to_string(req.endIJK[d]) + ")";
+            }
+            return s;
+        };
+        const std::string parentExtent = std::to_string(pdims[0]) + "x"
+            + std::to_string(pdims[1]) + "x" + std::to_string(pdims[2]);
+
+        for (int d = 0; d < 3; ++d) {
+            // 1) The box must address cells that exist in the parent LGR.
+            if (req.startIJK[d] < 0 || req.endIJK[d] > pdims[d]
+                || req.startIJK[d] >= req.endIJK[d]) {
+                throw std::logic_error(
+                    "Nested refinement box '" + req.name + "' extends outside its parent LGR '"
+                    + req.parentGridName + "' (parent has " + parentExtent + " refined cells): "
+                    "its parent-local IJK range " + ijkRange()
+                    + " must be non-empty and lie within the parent.");
+            }
+            // 2) Only a child strictly interior to the parent LGR is supported:
+            //    it must not touch any parent boundary face. With exclusive
+            //    endIJK this is startIJK >= 1 and endIJK <= parentDim-1.
+            if (req.startIJK[d] < 1 || req.endIJK[d] > pdims[d] - 1) {
+                throw std::logic_error(
+                    "Nested refinement box '" + req.name + "' touches the boundary of its "
+                    "parent LGR '" + req.parentGridName + "' (parent " + parentExtent
+                    + "; box parent-local IJK " + ijkRange() + "). Only a child fully "
+                    "contained in the interior of its parent LGR is supported yet "
+                    "(docs/NESTED_LGR_PLAN.md Phase C): every direction must satisfy "
+                    "1 <= startIJK and endIJK <= parentDim-1.");
+            }
+        }
+
         std::vector<std::shared_ptr<CpGridData>> inner{ storage[p + 1], storage[b + 1] };
         std::vector<BlockRefinement> innerReq{ requests[b] };
         const LevelGeom& pg = levelGeom[p + 1];

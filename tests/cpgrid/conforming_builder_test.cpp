@@ -554,9 +554,10 @@ BOOST_AUTO_TEST_CASE(nestedRefinementReachesLeafBoundary)
         parent.dims, parent.coord, parent.zcorn, parent.actnum));
 
     // LGR1: 2x1x1 GLOBAL parents -> local refined dims 4x2x2.
-    // NEST1: a box inside LGR1's local space, parent "LGR1".
+    // NEST1 {0,0,0}-{2,2,2} touches LGR1's boundary (startIJK has zeros), so it
+    // is rejected by the containment check (only fully-interior nesting yet).
     const auto isNestedLeafBoundary = [](const std::logic_error& e) {
-        return std::string(e.what()).find("Phase C")
+        return std::string(e.what()).find("touches the boundary")
                != std::string::npos;
     };
     BOOST_CHECK_EXCEPTION(
@@ -633,9 +634,10 @@ BOOST_AUTO_TEST_CASE(nestedFullyContainedBuilds)
 
     // LGR1: GLOBAL cells i:1-2, j:1, k:1 (2x1x1) refined 3x3x3 -> LGR1-local 6x3x3.
     // NEST1: LGR1-local i:1-4, j:1, k:1 -> strictly interior to LGR1 (touches no
-    //        LGR1 boundary face), refined 2x2x2, parent grid "LGR1".
-    const auto isNestedNotImplemented = [](const std::logic_error& e) {
-        return std::string(e.what()).find("Phase C")
+    //        LGR1 boundary face), refined 2x2x2, parent grid "LGR1". Passes the
+    //        containment check and reaches the outer-composition boundary.
+    const auto isOuterCompositionPending = [](const std::logic_error& e) {
+        return std::string(e.what()).find("outer level-zero leaf")
                != std::string::npos;
     };
     BOOST_CHECK_EXCEPTION(
@@ -644,7 +646,7 @@ BOOST_AUTO_TEST_CASE(nestedFullyContainedBuilds)
                                    {{3,2,2}, {5,2,2}},
                                    {"LGR1", "NEST1"},
                                    {"GLOBAL", "LGR1"}),
-        std::logic_error, isNestedNotImplemented);
+        std::logic_error, isOuterCompositionPending);
 }
 
 BOOST_AUTO_TEST_CASE(faultInsideBoxEndToEnd)
