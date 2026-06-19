@@ -598,6 +598,55 @@ BOOST_AUTO_TEST_CASE(nestedChildBeforeParentThrows)
         std::logic_error, isUnbuiltParent);
 }
 
+// A CARFIN whose parent is another LGR (nested), with the child box strictly
+// interior to the parent LGR - it touches none of the parent's refined boundary
+// faces. This is the simplest nesting case: the child's leaf stitching is
+// entirely within the parent LGR's refined region, with no interaction with
+// GLOBAL. Until the leaf assembler handles nesting (docs/NESTED_LGR_PLAN.md
+// Phase C) the nested level grids are built (Phases A/B) and then a precise
+// "not implemented" is thrown.
+//
+// Phase-C acceptance: replace BOOST_CHECK_EXCEPTION below with the build call,
+// then assert (mirroring endToEndSingleBox):
+//   - grid.maxLevel() == 2 and getLgrNameToLevel() == {LGR1:1, NEST1:2};
+//   - total leaf volume == volume before refinement (conservation);
+//   - every NEST1 leaf cell's father is an LGR1 cell whose father is GLOBAL
+//     (the child -> parent-LGR -> GLOBAL chain), geometryInFather == 1/8;
+//   - leaf intersections are conformal (each interior face seen from both sides
+//     with matching area).
+BOOST_AUTO_TEST_CASE(nestedFullyContainedBuilds)
+{
+    // GLOBAL 4x3x3 with distorted vertical pillars.
+    auto depth = [](int i_, int j_, int k_) {
+        const double x = cellOf(i_) + sideOf(i_);
+        const double y = cellOf(j_) + sideOf(j_);
+        return 2.0*(cellOf(k_) + sideOf(k_)) + 0.3*std::sin(0.9*x) + 0.2*std::cos(0.6*y);
+    };
+    auto parent = makeVerticalPillarGrid({4, 3, 3}, depth);
+
+    Dune::CpGrid grid;
+    auto rawParent = parent.raw();
+    grid.processEclipseFormat(rawParent, false);
+
+    BuilderGuard guard(std::make_unique<Opm::Refinement::ConformingBlockBuilder>(
+        parent.dims, parent.coord, parent.zcorn, parent.actnum));
+
+    // LGR1: GLOBAL cells i:1-2, j:1, k:1 (2x1x1) refined 3x3x3 -> LGR1-local 6x3x3.
+    // NEST1: LGR1-local i:1-4, j:1, k:1 -> strictly interior to LGR1 (touches no
+    //        LGR1 boundary face), refined 2x2x2, parent grid "LGR1".
+    const auto isNestedNotImplemented = [](const std::logic_error& e) {
+        return std::string(e.what()).find("Nested LGR leaf assembly is not implemented")
+               != std::string::npos;
+    };
+    BOOST_CHECK_EXCEPTION(
+        grid.addLgrsUpdateLeafView({{3,3,3}, {2,2,2}},
+                                   {{1,1,1}, {1,1,1}},
+                                   {{3,2,2}, {5,2,2}},
+                                   {"LGR1", "NEST1"},
+                                   {"GLOBAL", "LGR1"}),
+        std::logic_error, isNestedNotImplemented);
+}
+
 BOOST_AUTO_TEST_CASE(faultInsideBoxEndToEnd)
 {
     // Fault between i=1 and i=2 columns, throw 0.6; box covers it.
