@@ -407,6 +407,15 @@ namespace Dune
         /// redistribute / output-grid) refinement paths.
         bool isDistributed() const { return !distributed_data_.empty(); }
 
+        /// @brief Whether the current (leaf) view carries per-cell
+        /// index-in-parent data, i.e. it contains refined cells. True for the
+        /// refine-before-redistribute distributed leaf, which has refined cells
+        /// but no level hierarchy (maxLevel() == 0), so the output collection
+        /// cannot rely on maxLevel()/getLevelCartesianIdx() to detect refinement
+        /// there. The per-cell index-in-parent is scattered in
+        /// CpGridData::distributeGlobalGrid for exactly this purpose.
+        bool leafHasParentCellIndices() const;
+
         /// @brief Returns either data_ or distributed_data_(if non empty).
         const std::vector<std::shared_ptr<Dune::cpgrid::CpGridData>>& currentData() const;
 

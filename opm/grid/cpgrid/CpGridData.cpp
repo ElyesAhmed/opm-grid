@@ -1614,6 +1614,22 @@ void CpGridData::distributeGlobalGrid(CpGrid& grid,
     DefaultContainerHandle<std::vector<int> > indexHandle(view_data.global_cell_, global_cell_);
     grid.scatterData(indexHandle);
 
+    // Communicate the per-cell index-in-parent-cell. For refine-before-
+    // redistribute the distributed grid is the flat refined leaf (no level
+    // hierarchy), so this is the only thing that still distinguishes refined
+    // sibling cells - which share a parent Cartesian index in global_cell_ -
+    // for the output collection (which otherwise collides on global_cell_).
+    // The scatter is collective, and the full refined leaf lives only on rank 0
+    // (other ranks may hold an empty placeholder), so decide collectively: a
+    // coarse/level-zero source grid carries this on no rank, leaving the array
+    // empty to mark an unrefined distributed grid.
+    if (ccobj_.max(view_data.cell_to_idxInParentCell_.empty() ? 0 : 1)) {
+        cell_to_idxInParentCell_.assign(cell_indexset.size(), -1);
+        DefaultContainerHandle<std::vector<int> >
+            idxInParentHandle(view_data.cell_to_idxInParentCell_, cell_to_idxInParentCell_);
+        grid.scatterData(idxInParentHandle);
+    }
+
     // Scatter face tags, normals, and boundary ids.
     auto noBids = view_data.unique_boundary_ids_.size();
     bool hasBids = ccobj_.max(noBids);
