@@ -60,29 +60,28 @@ that test's header comment:
 `opm-tests/lgr/SPE1CASE1_CARFIN1_NESTED.DATA` is a `CARFIN` inside `CARFIN1`'s
 box. Serial only for now (parallel nested is Phase D).
 
-**Contained variant (works):** `opm-tests/lgr/SPE1CASE1_CARFIN1_NESTED_CONTAINED.DATA`
-— NEST1 is strictly interior to LGR1 (and reaches LGR1-local k=8, beyond the
-global NZ=3, exercising the parent-relative CARFIN validation, opm-common
-`LgrCollection::addLgr`). It parses, builds the 3-level leaf, and runs the SOLVE
-to completion. ECL output of nested LGRs is not done yet, so run with output off:
+**Contained variant (works, with ECL output):**
+`opm-tests/lgr/SPE1CASE1_CARFIN1_NESTED_CONTAINED.DATA` — NEST1 is strictly
+interior to LGR1 (and reaches LGR1-local k=8, beyond the global NZ=3, exercising
+the parent-relative CARFIN validation, opm-common `LgrCollection::addLgr`). It
+parses, builds the 3-level leaf, runs the SOLVE, and writes EGRID/INIT/UNRST:
 
 ```sh
 builds/refined_nested/opm-simulators/bin/flow_blackoil \
   opm-tests/lgr/SPE1CASE1_CARFIN1_NESTED_CONTAINED.DATA \
-  --parsing-strictness=low --enable-ecl-output=false --output-dir=/tmp/nested
+  --parsing-strictness=low --output-dir=/tmp/nested
 ```
-Expect `End of simulation`.
+Expect `End of simulation` and `.EGRID/.INIT/.UNRST` (inspect in ResInsight).
+
+The per-LGR ECL output requires the simulator's LGR level order to match
+opm-common's deck order; Phase A (`GenericCpGridVanguard`) uses a stable
+topological order (deck order, child after parent) for this. A depth-grouping
+sort would mispair the per-LGR data (e.g. NEST1's trans with LGR2's grid ->
+`EclipseGrid::compressedVector` "Input vector must have full size").
 
 **Bundled `SPE1CASE1_CARFIN1_NESTED.DATA`** has a NEST that *touches* LGR1's
 boundary in k, so it is (correctly) rejected with the containment message;
 boundary-touching nesting is a future extension.
-
-**Known remaining (nested ECL output):** with output ON, a nested deck throws
-opm-common `EclipseGrid::compressedVector` "Input vector must have full size" —
-the per-LGR INIT/restart property extraction hands LGR1's `EclipseGridLGR` a
-NEST-sized vector (e.g. 896 NEST cells vs LGR1's 324) instead of LGR1's own
-cells. Nested ECL output needs per-level property derivation across the
-LGR1->NEST hierarchy (a separate subsystem, like the parallel-LGR output).
 
 ## 4. Regression — current behavior must not change
 
