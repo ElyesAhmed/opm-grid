@@ -317,16 +317,35 @@ void Opm::Lgr::extractRestartValueLevelGrids(const Grid& grid,
                                                            level);
         }
 
-        for (const auto& [rst_key, leafVector] : leafRestartValue.extra) {
+        const auto leafCellCount =
+            static_cast<std::size_t>(grid.leafGridView().size(0));
 
-            std::vector<std::vector<double>> levelVectors{};
-            levelVectors.resize(maxLevel+1);
+        for (const auto& [rst_key, leafVector] : leafRestartValue.extra) {
 
             if (rst_key.key == "OPMEXTRA") {
                 // For OPMEXTRA, leafVector has size 1 instead of
                 // grid.leafGridView().size(0)
                 continue; // skip it
             }
+
+            // Extra vectors that are not per-leaf-cell data must NOT be
+            // distributed across levels by cell index: doing so (via
+            // populateDataVectorLevelGrids) treats them as cell data and resizes
+            // them to each level's cell count, corrupting them. The prime example
+            // is THRESHPR, a global threshold-pressure matrix of size
+            // num_equil_regions^2; cell-distributing it produced an 8866-element
+            // vector (the level-0 cell count) and tripped the
+            // 'THPRES vector has invalid size' check in RestartIO. Such global
+            // quantities are the same on every level, so copy them verbatim.
+            if (leafVector.size() != leafCellCount) {
+                for (int level = 0; level <= maxLevel; ++level) {
+                    restartValue_levels[level].addExtra(rst_key.key, rst_key.dim, leafVector);
+                }
+                continue;
+            }
+
+            std::vector<std::vector<double>> levelVectors{};
+            levelVectors.resize(maxLevel+1);
             Opm::Lgr::populateDataVectorLevelGrids<double>(grid,
                                                            maxLevel,
                                                            leafVector,
