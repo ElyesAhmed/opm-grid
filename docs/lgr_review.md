@@ -1,7 +1,7 @@
 # Review of the LGR work (opm-grid / opm-common / opm-simulators)
 
 State reviewed: master checkouts as of 2026-06-12 in `~/Documents/OPM/opm_vscode_clean`.
-Last updated: 2026-06-12 (added §8, alternatives for full general refinement; Part II, way forward for static LGR on current input; Part III, follow-ups; Part IV, repository strategy after lgr_refactor).
+Last updated: 2026-06-23 (added Part V: redistribution + the dynamic `AdaptiveCpGrid` review). Earlier: 2026-06-12 (§8 alternatives for full general refinement; Part II static-LGR way forward; Part III follow-ups; Part IV repository strategy after lgr_refactor).
 Canonical copy: `docs/lgr_review.md` in github.com/hnil/opm-gridrefined. Development roadmap: `docs/PLAN.md`.
 
 ## Executive summary
@@ -276,3 +276,74 @@ Design rules for the rebuilt refinement layer (Route A):
 4. **First-class non-matching connections.** Fault-side LGR boundaries, NNCs and (interim) nonconforming couplings share one explicit connection representation with overlap geometry, feeding the same assembly.
 
 Recorded for a future Route B (complete new core — only if VEM on general grids and dynamic refinement become firm goals): polyhedral-first topology (drop the `array<int,8>`/6-face assumptions entirely); no friend web — narrow public topology/geometry accessors, entities as index handles, core usable without DUNE (which the VEM/geomech side wants anyway); forest-of-trees refinement state with Morton ids and 2:1 balance (§8.4); geometry computed/cached rather than stored per level; distribution as a layer over the same data. The honest cost statement stands: CpGrid's parallel machinery and ECL integration are the moat — year-scale to parity — which is exactly why Route A keeps them.
+
+---
+
+# Part V — session review (2026-06-23): redistribution & the dynamic grid (`AdaptiveCpGrid`)
+
+This part records the conclusions of a design session that examined (a) grid
+*redistribution* and (b) whether a dynamic locally-refinable grid is "just"
+reuse of the existing kernels. The dynamic design itself is
+[DESIGN-parallel-octree.md](DESIGN-parallel-octree.md) §10–§14; the plan track is
+[PLAN.md](PLAN.md) Track 3; redistribution detail is
+[REDISTRIBUTION-requirements.md](REDISTRIBUTION-requirements.md) /
+[REDISTRIBUTION-status.md](REDISTRIBUTION-status.md).
+
+## V.1 Redistribution (move a distributed grid from one partition to another)
+
+- **Status:** unsupported everywhere today — with or without LGR, in the original
+  and the rebuild. It is a **CpGrid-level gap**, not an LGR one: `scatterGrid`
+  refuses a second call (`CpGrid.cpp:230`) and assumes the source is the serial
+  grid on rank 0 (gather-to-root partitioning, root-authored export/import lists,
+  a `distributeGlobalGrid` that reads the global serial view).
+- **A correct interim path exists and is cheap to reason about:** since the leaf
+  is plain arrays and `distributeGlobalGrid` is already "communicate these
+  arrays", you can **gather the whole grid to rank 0, rebuild one serial
+  `CpGridData`, and re-run the existing `scatterGrid` with a new partition.** Only
+  the gather is new code; the scatter is reused. Non-skippable even so: stable
+  global ids (so solution/well state follows cells) and carrying the LGR
+  hierarchy along (flatten to per-cell tags, or rescatter the level grids). Cost:
+  O(global) memory on root + a full gather+scatter per rebalance — fine for
+  correctness, not for scale.
+- **The scalable answer is the dynamic grid, not a CpGrid retrofit:**
+  `AdaptiveCpGrid` rebalances by **migrating root-tree bytes** and rebuilding the
+  leaf locally (no leaf-vector communication). So "add redistribution" and "build
+  the dynamic grid" are effectively the same project.
+
+## V.2 Does all refinement reduce to the current LGR kernels?
+
+Reviewed claim: *all the machinery for refining a cell and for the
+cell-to-cell intersection is already OK, since all refinement can be done by the
+current LGR framework.* **Verdict: agree in spirit.** Cell subdivision is a
+1×1×1 box via `assembleBlockLevelGrid`; the conformal interface is the
+leaf-assembler mosaic + `edgeConformalizeLeaf`; `Intersection` is a thin generic
+reader over `cell_to_face_`/`face_to_cell_`. So the dynamic grid is mostly
+*assembly of built pieces*. Two caveats remain (the earlier "general polyhedral"
+worry is **withdrawn** — see below):
+1. **Refinable-parent geometry** must be a clean hex; fault/pinch parents are
+   deferred (octree §2). Reservoir AMR often wants refinement near faults, so this
+   is more load-bearing than "a small fraction of cells".
+2. **Multi-level interfaces** are designed but not yet proven for general 2:1
+   graded, mixed-level cases (octree §3) — the riskiest reuse.
+
+## V.3 Scope sharpened (user correction)
+
+The dynamic grid is **always refined from a corner-point grid — never general
+polyhedral.** Leaf cells are hex *geometry* (8 corners on their pillars) that may
+carry **>6 faces** for conformality. The corner-point sub-pillar structure is
+precisely what makes the cell-to-cell intersection simple (a 2-D clip in pillar
+parameter space, review §8.1), and the existing variable-length `cell_to_face_`
+already represents the multi-face cells with no new container. This is a
+simplification that the design leans on, not a limitation to remove.
+
+## V.4 Decisions taken (see Track 3 / octree §13–§14 for rationale)
+
+- Class name **`AdaptiveCpGrid`**; new and additive (no `CpGrid`/LGR regression).
+- **Representation:** compact Layer A (corner-point input + forest) is the source
+  of truth; the materialized leaf is a per-rank derived cache (octree §10).
+- **Fast adapt:** incremental local vector mutation, serial-first; full rebuild is
+  only the oracle (octree §12).
+- **Split policy:** arbitrary anisotropic first split, factor-2 anisotropic
+  thereafter (octree §13).
+- **AMR backend:** deferred, gated on a serial in-house spike; p4est/t8code ruled
+  out under the anisotropy choice (octree §14).

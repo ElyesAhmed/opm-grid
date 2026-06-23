@@ -1,5 +1,9 @@
 # Status: distribution and redistribution, with/without LGR
 
+> Companion: [REDISTRIBUTION-requirements.md](REDISTRIBUTION-requirements.md) —
+> *what would have to be built* to add redistribution (work breakdown). This
+> doc is *where we are*.
+
 Two distinct operations are often conflated:
 
 - **Distribution** (`loadBalance`/`scatterGrid`): serial grid → distributed

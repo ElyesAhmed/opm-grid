@@ -30,6 +30,8 @@ Inventory of multilevel state with *surviving* readers (everything else the old 
 
 `DefaultGeometryPolicy` stores its geometry vectors as `shared_ptr<EntityVariable<...>>`, so all level grids and the leaf can point at a *single* corner vector: level-0 corners first, then refined corners appended per level. Cells and faces reference corners by index into the pool.
 
+> Under the dynamic `AdaptiveCpGrid` (octree) the corner pool is a **per-rank derived cache**, not persistent state: refined corners are reconstructed from sub-pillars (`root pillars + octant code`) on demand and never persisted or communicated. The persistent source of truth is `RetainedCornerPointInput` (the macro corner-point description) + the forest — see [DESIGN-parallel-octree.md](DESIGN-parallel-octree.md) §10.
+
 Consequences, all simplifying:
 - "Is this refined corner the same as that one" disappears — same pool index *is* the same corner. The entire corner-identification layer of the old implementation (its largest and most fragile part) has no counterpart here.
 - `corner_history_` becomes unnecessary: a leaf corner's identity is its pool index. Its only surviving reader (`Indexsets.hpp` corner ids) is rewritten to use the pool index (D3).
@@ -41,6 +43,8 @@ Faces and cells keep per-level/leaf entries (their geometry is small: centroid +
 ### D2 — Leaf: materialized topology, shared geometry
 
 A fully "leaf as view" design is not reachable without an index-indirection layer in Entity/Iterators (they assume each `CpGridData` owns dense tables). Decision: keep the leaf's *topology* materialized (int tables — cheap), share the *corner geometry* through D1, and accept duplicated face/cell centroid records. This preserves the DUNE facade unchanged and still removes the expensive duplication.
+
+> Under the dynamic `AdaptiveCpGrid` (octree) the materialized leaf topology is likewise a **per-rank derived cache** (owned+ghost only, never a global vector), rebuilt — incrementally for fast adapt — from Layer A (`RetainedCornerPointInput` + forest). The corner-point input the builder retains is therefore **permanent state** (needed for restart and for ghost geometry reconstruction on every rank), not a build-time convenience. See [DESIGN-parallel-octree.md](DESIGN-parallel-octree.md) §10 and §12.
 
 ### D3 — Construction-stable ids (no insertIdSet, no sync)
 
