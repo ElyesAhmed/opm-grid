@@ -150,10 +150,70 @@ box span ranks (each rank refines its part) would close the whole-grid-LGR gap
 distributed refinement only if it falls out of D3 without much added
 complexity. D3 + output do **not** depend on it.
 
+## Track 3 — AdaptiveCpGrid (dynamic, parallel local refinement)
+
+Promoted from "out of scope" to an **active design track** (2026-06-23). This is
+the dynamic successor to the static builder: a parallel, locally/dynamically
+refinable corner-point grid. Full design: [DESIGN-parallel-octree.md](DESIGN-parallel-octree.md)
+(§10–§14 added this session); representation/id details in
+[DESIGN-builder.md](DESIGN-builder.md) (D1–D3); redistribution context in
+[REDISTRIBUTION-requirements.md](REDISTRIBUTION-requirements.md) /
+[REDISTRIBUTION-status.md](REDISTRIBUTION-status.md). Work lives on branch
+**`adaptive-cpgrid`**.
+
+**Name & constraint.** The class is **`AdaptiveCpGrid`** — new and **additive**:
+it must not modify or regress `CpGrid` or the static LGR path (those tests stay
+green); it reuses the shared kernels (`GrdeclRefinement`, `assembleLeafGrid`,
+`edgeConformalizeLeaf`) unchanged.
+
+**Decisions fixed 2026-06-23:**
+- **Scope** (octree §2): always refined from a corner-point grid, **never
+  general polyhedral**. Refinable parent = clean hex (8 corners); leaf cells are
+  hex *geometry* but may carry **>6 faces** (conformal sub-face mosaics).
+  Interfaces stay cheap — a 2-D clip in pillar parameter space (review §8.1).
+- **Representation** (octree §10): two layers. *Layer A* (persistent / migrated /
+  serialized, compact) = the macro corner-point input (`RetainedCornerPointInput`)
+  + a forest of per-root trees. *Layer B* (derived, per-rank, owned+ghost only) =
+  the materialized leaf `CpGridData`; multi-face cells need **no new container**
+  (`cell_to_face_` is already a variable-length `SparseTable`). No full global
+  vectors.
+- **Fast incremental refinement** (octree §12): mutate the leaf vectors locally —
+  append + free-list + D3-id identity + stencil-only edits + lazy compaction.
+  Full-leaf rebuild is only the correctness oracle. Serial-first.
+- **Split policy** (octree §13): arbitrary anisotropic **first** split per root
+  (CARFIN-exact), then **factor-2 anisotropic** per dynamic level (Morton-clean
+  ids, textbook 2:1 balance, bounded ≤2×2 interface mosaic).
+- **AMR backend** (octree §14): **deferred, gated on a spike.** p4est/t8code are
+  ruled out under the anisotropic policy (they hard-code isotropic 1→8); in-house
+  forest is the working assumption. Reuse Zoltan/ParMETIS (`zoltanGoG`) + a small
+  SFC + Dune comm + the existing leaf kernels.
+
+**Incremental path** (octree §9, gating the backend decision):
+1. **Serial in-house forest + leaf rebuild** — per-cell trees over level zero;
+   mark/balance/apply; rebuild leaf via the generalised assembler; coarsening.
+   *Gate:* a uniform-depth forest reproduces a CARFIN refinement **bitwise**.
+2. **Packed ids (D3)** replacing delegation — serial first (must stay
+   bitwise-equal), then they enable parallel and fast incremental adapt.
+3. **Parallel** — SFC root partition + ghost-tree layer; owned+ghost leaf build;
+   ids-based index sets. 2-rank then 4-rank (the cases CpGrid's own scatter
+   failed).
+4. **Dynamic loop in flow** — `adaptGrid` hook + conservative state transfer.
+
+**Redistribution note.** AdaptiveCpGrid's root-tree migration *is* the
+redistribution capability CpGrid lacks (move tree bytes, rebuild leaf locally).
+A correct-but-slow interim alternative for plain CpGrid (gather to root,
+re-scatter) is documented in REDISTRIBUTION-requirements.md but is not on this
+track's critical path.
+
 ## Acceptance gate — deck matrix (Part II)
 
 CI matrix from day one: unfaulted Cartesian / faulted / pinched / NNC / aquifer × serial / parallel × wells in/out of LGR; ECLIPSE reference output where available. Each milestone and Track 0 item is "done" when its rows pass.
 
 ## Out of scope (recorded, not planned)
 
-Dynamic refinement (§7, §8.4: forest-of-trees state, 2:1 balance, Morton ids, cached fault overlaps) and a polyhedral-first new grid core (Route B, §IV.2) — revisit only if VEM-on-general-grids/dynamic refinement become firm goals.
+A polyhedral-first new grid core (Route B, §IV.2) — revisit only if
+VEM-on-general-grids becomes a firm goal.
+
+(Dynamic refinement, previously listed here, was **promoted to Track 3**
+(`AdaptiveCpGrid`) on 2026-06-23 — design active, implementation pending the
+serial spike.)
