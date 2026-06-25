@@ -23,13 +23,66 @@ useful as an end-to-end smoke test.
 | # | Gap | Where it throws | Deck |
 |---|-----|-----------------|------|
 | A1 | **Nested LGR** (an LGR refined inside another LGR, `parentGridName != GLOBAL`) — **partially landed 2026-06-16**, see `docs/NESTED_LGR_PLAN.md`. Phase A (simulator parent pass-through + topological ordering) and Phase B (build each nested level grid over its parent LGR) are done and the GLOBAL path is byte-identical; the recursive **leaf** assembly (Phase C) and parallel nested (Phase D) remain, so the builder now throws a precise *"Nested LGR leaf assembly is not implemented"* after building the nested level grids (was an immediate throw at `ConformingBlockBuilder.cpp`). | `ConformingBlockBuilder.cpp` (post-level-grid Phase-C guard) | `opm-tests/lgr/SPE1CASE1_CARFIN1_NESTED.DATA` (CARFIN inside `LGR1`); unit tests `nestedRefinementReachesLeafBoundary`, `nestedChildBeforeParentThrows`. Master supports it. |
-| A2 | **Touching boxes, non-matching subdivisions** (different `cellsPerDim` in a shared/overlap direction) | `ConformingBlockBuilder.cpp:143` | unit test `faceSharingNonMatchingSubdivisionsThrow`. A flow deck = two adjacent `CARFIN` boxes with different `NX/NY/NZ`. |
+| A2 | **Touching boxes, different in-face subdivisions** (different `cellsPerDim` in a *shared/overlap* direction). The builder requires the in-face subdivisions to be **equal**; a different-but-*compatible* (multiple) factor is **also** rejected, even though it is geometrically conformalizable — see the note below. | `ConformingBlockBuilder.cpp` (the per-direction `cellsPerDim` check) | unit test `faceSharingNonMatchingSubdivisionsThrow`; flow decks `opm-tests/lgr/TLGR_VSTACK_HCOMPAT.DATA` (compatible 4-vs-2 → rejected), `TLGR_SIDE_BAD.DATA` (incompatible 3-vs-2). |
 | A3 | **Box that cannot be kept on one rank** (spans whole grid, or would empty another rank) — parallel only | `ConformingBlockBuilder.cpp:97` (classifyBox) / `CpGridVanguard::applyLgrPartitionCellGroups_` | `opm-tests/lgr/SPE1CASE1_CARFIN_GR.DATA` (`LGR1` spans the entire grid) — runs serial, throws an actionable error in parallel. Master supports it (distribute-then-refine). |
 | A4 | **A refinement box crossing a coarse fault that is *not* on the box boundary in some configs** | — | covered by `SIMPLE_2PH_W_FAULT_LGR` (boundary-crossing fault works); deep fault/pinch interactions inside a box are not separately tested. |
 
 Note: `CARFIN.DATA`/`CARFIN_FLEX.DATA` (diagonal, edge/corner-touching) now build
 and are bit-identical to master. `CARFIN_FAULTS.DATA` / `*XYZ-NON.DATA` fail in
 opm-common `FAULTS` parsing **on master too** — not a refinement gap.
+
+### A2 detail — compatible touching boxes via a sub-face mosaic (not implemented)
+
+Two refinement boxes that share a 2-D face are conformal only if their
+subdivisions match in the **in-face** directions (the two directions *parallel*
+to the shared face); the **touch direction** (perpendicular to it) is free. So:
+
+- *Stacked* boxes (touch at a horizontal face): the in-face directions are I,J.
+  A different **vertical** (K) factor is fine (e.g. K = 4 vs 2 builds); a
+  different **I or J** factor is the constrained case.
+- *Side-by-side* boxes (touch at a vertical face): the in-face directions are
+  the other two; the along-touch factor is free.
+
+For the constrained (in-face) directions the builder currently demands the two
+factors be **equal**. But there are two distinct sub-cases:
+
+- **Compatible** — the finer factor is an integer multiple of the coarser
+  (4 vs 2). Geometrically this *is* conformalizable: subdivide the coarser
+  side's interface faces into a matching `hi/lo × hi/lo` mosaic so each fine
+  cell meets exactly one sub-face. The interface cells on the coarse side become
+  hexes with a **split top/bottom (or side) face** — i.e. >6-face cells, exactly
+  the multi-face-hex the leaf already uses at a box↔*coarse-neighbour* boundary
+  (see [DESIGN-parallel-octree.md](DESIGN-parallel-octree.md) §2/§10). **This is
+  a real, supportable case the builder rejects today.**
+- **Incompatible** — neither factor divides the other (3 vs 2). The sub-faces
+  cannot be aligned by any straight subdivision; the interface is genuinely
+  non-conformal and **must** be rejected.
+
+The error message now distinguishes the two (commit on `adaptive-cpgrid`):
+*"…different but compatible subdivisions … a sub-face mosaic on the coarser side
+… not implemented yet"* vs *"…incompatible subdivisions … neither is a multiple
+of the other …"*.
+
+**Why it's not done yet:** the existing mosaic machinery in the leaf assembler
+splits a refined box's boundary face against the **parent-level (unrefined)**
+neighbour — a single one-level jump. A box↔box interface with a *compatible*
+factor needs a mosaic between **two refined levels** (match the finer to the
+coarser), which the assembler doesn't construct.
+
+**Implementation effort — medium (a few days), self-contained.** The leaf
+representation already permits >6-face cells (no container change). Concretely:
+(1) relax the A2 guard from "equal" to "equal **or** the in-face factor of one is
+a multiple of the other" in the shared directions; (2) at the shared face,
+generate the sub-face mosaic on the coarser box's interface cells by reusing the
+parameter-space pillar clip used for the box↔coarse boundary, now matching the
+finer box's sub-pillars instead of the parent pillars; (3) wire the resulting
+sub-faces into `face_to_cell_`/`cell_to_face_` (variable-length rows already
+support it) and dedup the shared corners via the existing exact-coordinate pool.
+Risks: only the **compatible** ratios; degenerate/fault cells at the interface
+are out of scope (Restriction A); parallel (rank-interior boxes never touch
+across ranks) is unaffected. A good first cut is **2-D-in-face mosaics for a
+single compatible ratio** (e.g. 2×), validated that a 4-vs-2 stacked pair builds
+a conformal leaf and matches a uniformly-4-refined reference where they overlap.
 
 ---
 
