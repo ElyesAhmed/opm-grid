@@ -182,10 +182,34 @@ void ConformingBlockBuilder::build(Dune::CpGrid& grid,
             }
             for (int c = 0; c < 3; ++c) {
                 const bool overlap = (a.startIJK[c] < b.endIJK[c]) && (b.startIJK[c] < a.endIJK[c]);
-                if (overlap && a.cellsPerDim[c] != b.cellsPerDim[c]) {
-                    throw std::logic_error("Refinement boxes '" + a.name + "' and '" + b.name
-                                           + "' meet with non-matching subdivisions in direction "
-                                           + std::to_string(c) + ". Not supported.");
+                if (overlap && (a.cellsPerDim[c] != b.cellsPerDim[c])) {
+                    const int na = a.cellsPerDim[c];
+                    const int nb = b.cellsPerDim[c];
+                    const int hi = (na > nb) ? na : nb;
+                    const int lo = (na > nb) ? nb : na;
+                    const std::string dir = std::to_string(c);
+                    // Two refinements meeting on a shared face are conformal only
+                    // if their in-face subdivisions are *equal*. When the finer is
+                    // an integer multiple of the coarser, the interface could be
+                    // made conformal by subdividing the coarser side's interface
+                    // faces into a matching sub-face mosaic (a >6-face hex) -- this
+                    // is geometrically possible but not implemented (LGR_GAPS A2).
+                    // Otherwise the sub-faces cannot be aligned at all.
+                    if ((lo > 0) && (hi % lo == 0)) {
+                        throw std::logic_error(
+                            "Refinement boxes '" + a.name + "' and '" + b.name +
+                            "' meet with different but compatible subdivisions in direction " +
+                            dir + " (" + std::to_string(hi) + " is a multiple of " +
+                            std::to_string(lo) + "). Making the shared interface conformal would "
+                            "require a sub-face mosaic on the coarser side; that is not "
+                            "implemented yet. Use equal subdivisions in the shared direction(s).");
+                    }
+                    throw std::logic_error(
+                        "Refinement boxes '" + a.name + "' and '" + b.name +
+                        "' meet with incompatible subdivisions in direction " + dir + " (" +
+                        std::to_string(na) + " vs " + std::to_string(nb) + "); neither is a "
+                        "multiple of the other, so the shared interface cannot be made conformal. "
+                        "Use equal subdivisions in the shared direction(s).");
                 }
             }
         }
