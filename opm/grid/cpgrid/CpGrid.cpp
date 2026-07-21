@@ -1178,6 +1178,30 @@ int CpGrid::cellFace(int cell, int local_index, int level) const
         : current_data_->back()->cell_to_face_[cpgrid::EntityRep<0>(cell, true)][local_index].index();
 }
 
+std::array<std::vector<std::set<int>>,2> CpGrid::vertexCell() const
+{
+    // Vertex <-> cell adjacency via the faces: every node of every face of a
+    // cell counts, not only the eight canonical corners, so hanging nodes on
+    // corner-point grids are included.
+    const int nc = numCells();
+    const int nv = this->numVertices();
+    std::vector<std::set<int>> vertex_cell(nv);
+    std::vector<std::set<int>> cell_vertex(nc);
+    for (int cell = 0; cell < nc; ++cell) {
+        const int nlf = numCellFaces(cell);
+        for (int lf = 0; lf < nlf; ++lf) {
+            const int face = this->cellFace(cell, lf);
+            const int nlv = numFaceVertices(face);
+            for (int lv = 0; lv < nlv; ++lv) {
+                const int vertex = faceVertex(face, lv);
+                vertex_cell[vertex].insert(cell);
+                cell_vertex[cell].insert(vertex);
+            }
+        }
+    }
+    return { std::move(vertex_cell), std::move(cell_vertex) };
+}
+
 const cpgrid::OrientedEntityTable<0,1>::row_type CpGrid::cellFaceRow(int cell) const
 {
     return current_data_->back()->cell_to_face_[cpgrid::EntityRep<0>(cell, true)];
