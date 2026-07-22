@@ -420,6 +420,7 @@ void addOverlapLayer(const CpGrid& grid,
                      const std::vector<int>& cell_part,
                      std::vector<std::tuple<int,int,char>>& exportList,
                      bool addCornerCells,
+                     const std::array<std::vector< std::set<int> >,2>& vertex_cell_maps,
                      int recursion_deps,
                      int level)
 {
@@ -447,26 +448,25 @@ void addOverlapLayer(const CpGrid& grid,
                                     cell_part,
                                     exportList,
                                     addCornerCells,
+                                    vertex_cell_maps,
                                     recursion_deps-1,
                                     level);
+                 
                 }
                 else if (addCornerCells) {
-                    // Add cells to the overlap that just share a corner with e.
-                    auto iit2 = validLevel? iit->outside().ilevelbegin() : iit->outside().ileafbegin();
-                    const auto& endIit2 = validLevel?  iit->outside().ilevelend() :  iit->outside().ileafend();
-
-                    for (; iit2 != endIit2; ++iit2) {
-                        if ( iit2->neighbor() )
-                        {
-                            int nb_index2 = ix.index(iit2->outside());
-                            if( cell_part[nb_index2]!=owner ) {
-                                addOverlapCornerCell(grid,
-                                                     owner,
-                                                     e,
-                                                     iit2->outside(),
-                                                     cell_part,
-                                                     exportList,
-                                                     level);
+                    // Add every cell sharing ANY vertex with this cell to the
+                    // overlap.  The vertex adjacency comes from vertexCell(),
+                    // which walks the faces, so hanging nodes on corner-point
+                    // grids are covered and cells across faults (not reachable
+                    // in two face-hops) are found as well -- both are missed by
+                    // a canonical-corner comparison of face neighbours.
+                    for (const auto vertex : vertex_cell_maps[1][index]) {
+                        for (const auto& cell : vertex_cell_maps[0][vertex]) {
+                            if (cell_part[cell] != owner) {
+                                // Mirror the two symmetric entries the
+                                // face-neighbour path records as well.
+                                exportList.emplace_back(cell, owner, AttributeSet::copy);
+                                exportList.emplace_back(index, cell_part[cell], AttributeSet::copy);
                             }
                         }
                     }
@@ -558,6 +558,7 @@ int addOverlapLayer([[maybe_unused]] const CpGrid& grid,
                     [[maybe_unused]] const Communication<Dune::MPIHelper::MPICommunicator>& cc,
                     [[maybe_unused]] bool addCornerCells,
                     [[maybe_unused]] const double* trans,
+                    [[maybe_unused]] bool useTransToFilterOverlap,
                     [[maybe_unused]] int layers,
                     [[maybe_unused]] int level)
 {
@@ -571,16 +572,16 @@ int addOverlapLayer([[maybe_unused]] const CpGrid& grid,
 
     auto it = validLevel?  grid.template lbegin<0>(level) : grid.template leafbegin<0>();
     const auto& endIt = validLevel?  grid.template lend<0>(level) : grid.template leafend<0>();
-
+    const std::array<std::vector<std::set<int>>,2> vertex_cell_maps = grid.vertexCell();
     for (; it != endIt; ++it) {
         int index = ix.index(*it);
         auto owner = cell_part[index];
         exportProcs.insert(std::make_pair(owner, 0));
-        if ( trans ) {
+        if ( trans && useTransToFilterOverlap ) {
             addOverlapLayerNoZeroTrans(grid, index, *it, owner, cell_part, exportList, addCornerCells, layers-1, trans, level);
         }
         else {
-            addOverlapLayer(grid, index, *it, owner, cell_part, exportList, addCornerCells, layers-1, level);
+            addOverlapLayer(grid, index, *it, owner, cell_part, exportList, addCornerCells, vertex_cell_maps, layers-1, level);
         }
     }
     // remove multiple entries

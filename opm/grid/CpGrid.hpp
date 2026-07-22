@@ -942,7 +942,8 @@ namespace Dune
                     const double* transmissibilities = nullptr, bool ownersFirst=false,
                     bool addCornerCells=false, int overlapLayers=1, int partitionMethod = Dune::PartitionMethod::zoltanGoG,
                     double imbalanceTol = 1.1,
-                    bool allowDistributedWells = false)
+                    bool allowDistributedWells = false,
+                    bool useTransToFilterOverlap = true)
         {
             // refine-before-redistribute: if the grid is already refined at
             // load-balance time (maxLevel() > 0) we are on the experimental
@@ -953,7 +954,8 @@ namespace Dune
             const int balanceLevel = (this->maxLevel() > 0) ? -1 : 0;
             auto ret = scatterGrid(method, ownersFirst, wells, possibleFutureConnections, serialPartitioning, transmissibilities,
                                    addCornerCells, overlapLayers, partitionMethod, imbalanceTol, allowDistributedWells,
-                                   /* input_cell_parts = */ std::vector<int>{}, /* level = */ balanceLevel);
+                                   /* input_cell_parts = */ std::vector<int>{}, /* level = */ balanceLevel,
+                                   useTransToFilterOverlap);
             using std::get;
             if (get<0>(ret))
             {
@@ -1218,6 +1220,9 @@ namespace Dune
         ///  of the vertex.
         int faceVertex(int face, int local_index) const;
 
+
+        /// \brief Get maps from vertexToCell out[0] and cellToVertex out[1];
+        std::array< std::vector< std::set<int> >, 2 > vertexCell() const;
         /// \brief Get vertical position of cell center ("zcorn" average).
         /// \brief cell_index The index of the specific cell.
         double cellCenterDepth(int cell_index) const;
@@ -1470,7 +1475,8 @@ namespace Dune
                     double imbalanceTol = 1.1,
                     bool allowDistributedWells = true,
                     const std::vector<int>& input_cell_part = {},
-                    int level = -1);
+                    int level = -1,
+                    bool useTransToFilterOverlap = true);
 
         /** @brief The data stored in the grid.
          *
