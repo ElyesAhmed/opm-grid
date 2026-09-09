@@ -29,6 +29,7 @@
 #include <opm/grid/cpgrid/LevelCartesianIndexMapper.hpp>
 
 #include <algorithm> // for std::sort
+#include <stdexcept>
 #include <utility>   // for std::pair
 #include <vector>
 
@@ -134,6 +135,29 @@ void extractSolutionLevelGrids(const Dune::CpGrid& grid,
             }
         });
     }
+}
+
+void assembleSolutionFromLevelGrids(const Dune::CpGrid& grid,
+                                    const std::vector<Opm::data::Solution>& levelSolutions,
+                                    Opm::data::Solution& leafSolution)
+{
+    const int maxLevel = grid.maxLevel();
+    if (levelSolutions.empty()) {
+        return;
+    }
+    // No refinement: the leaf grid IS level 0, so copy it straight through.
+    if (maxLevel == 0) {
+        leafSolution = levelSolutions[0];
+        return;
+    }
+    // Refined restart: reassembling the leaf solution from the per-level
+    // sections needs the same level-Cartesian output ordering the writer used
+    // (mapLevelIndicesToCartesianOutputOrder) inverted per level, then the
+    // leaf-cell -> (level, level-compressed-index) map. Not implemented yet --
+    // restart of a run that was dynamically refined is unsupported.
+    throw std::runtime_error(
+        "assembleSolutionFromLevelGrids: restart of a dynamically refined "
+        "run (maxLevel > 0) is not implemented");
 }
 #endif
 
