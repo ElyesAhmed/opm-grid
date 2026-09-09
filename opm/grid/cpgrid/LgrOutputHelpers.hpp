@@ -187,6 +187,14 @@ void extractSolutionLevelGrids(const Dune::CpGrid& grid,
                                const Opm::data::Solution& leafSolution,
                                std::vector<Opm::data::Solution>&);
 
+/// @brief Inverse of extractSolutionLevelGrids: reassemble the single
+///        leaf-grid solution from the per-level restart sections. Each leaf
+///        cell takes its value from the level it lives on. Used when
+///        restarting a refined run (dynamic-refinement).
+void assembleSolutionFromLevelGrids(const Dune::CpGrid& grid,
+                                    const std::vector<Opm::data::Solution>& levelSolutions,
+                                    Opm::data::Solution& leafSolution);
+
 /// @brief Constructs restart-value containers for all grid refinement levels.
 ///
 /// The level-specific solution data are first derived from the leaf solution
