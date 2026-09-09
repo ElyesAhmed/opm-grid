@@ -1,16 +1,16 @@
 #include"config.h"
 #include <algorithm>
 #include <array>
+#include <cassert>
+#include <cstdint>
 #include <map>
 #include <set>
 #include <vector>
 #include <utility>
 #include"CpGridData.hpp"
 #include"DataHandleWrappers.hpp"
-#include"ElementMarkHandle.hpp"
 #include"Intersection.hpp"
 #include"Entity.hpp"
-#include "LgrHelpers.hpp"
 #include"OrientedEntityTable.hpp"
 #include"Indexsets.hpp"
 #include"PartitionTypeIndicator.hpp"
@@ -30,6 +30,20 @@ namespace Dune
 {
 namespace cpgrid
 {
+
+namespace {
+    // Local replacement for the removed Opm::Lgr::getIJK utility.
+    std::array<int,3> cartesianIjk(int idx, const std::array<int,3>& dims)
+    {
+        std::array<int,3> ijk = {0,0,0};
+        ijk[0] = idx % dims[0]; idx /= dims[0];
+        ijk[1] = idx % dims[1];
+        ijk[2] = idx / dims[1];
+        return ijk;
+    }
+}
+
+
 
 CpGridData::CpGridData(const CpGridData& g)
     : index_set_(new IndexSet(g.cell_to_face_.size(), g.geomVector<3>().size())),
@@ -73,6 +87,47 @@ CpGridData::CpGridData(MPIHelper::MPICommunicator comm,  std::vector<std::shared
     cell_interfaces_=std::make_tuple(Interface(ccobj_),Interface(ccobj_),Interface(ccobj_),Interface(ccobj_),Interface(ccobj_));
 #endif
     level_data_ptr_ = &data;
+}
+
+std::vector<std::int64_t> CpGridData::stableCellId() const
+{
+    // Refined cells carry their parent's Cartesian index in global_cell_, so a
+    // refined cell is identified by (parent Cartesian, child index). Pack that
+    // into a tagged 64-bit id; an unrefined/coarse cell keeps its plain
+    // Cartesian index (tag bit clear), so the two ranges never overlap.
+    // child index < 2^childBits (a child count far beyond any realistic
+    // refinement) and the parent index then has 62 - childBits bits.
+    constexpr int childBits = 20;
+    constexpr std::int64_t refinedTag = std::int64_t(1) << 62;
+
+    const std::size_t n = global_cell_.size();
+    std::vector<std::int64_t> ids(n);
+    const bool hasParents = !child_to_parent_cells_.empty();
+    for (std::size_t c = 0; c < n; ++c) {
+        const bool refined = hasParents && child_to_parent_cells_[c][0] != -1;
+        if (!refined) {
+            ids[c] = static_cast<std::int64_t>(global_cell_[c]);
+            continue;
+        }
+        const std::int64_t parentCart = global_cell_[c];      // parent's Cartesian index
+        const std::int64_t child = cell_to_idxInParentCell_[c]; // lattice index within parent
+        assert(child >= 0 && child < (std::int64_t(1) << childBits));
+        ids[c] = refinedTag | (parentCart << childBits) | child;
+    }
+    return ids;
+}
+
+void CpGridData::poisonRefinedGlobalCell(int sentinel)
+{
+    if (child_to_parent_cells_.empty()) {
+        return; // no refined cells on this grid (e.g. an actual level-zero grid)
+    }
+    const std::size_t n = std::min(global_cell_.size(), child_to_parent_cells_.size());
+    for (std::size_t c = 0; c < n; ++c) {
+        if (child_to_parent_cells_[c][0] != -1) {
+            global_cell_[c] = sentinel;
+        }
+    }
 }
 
 #if HAVE_MPI
@@ -206,6 +261,12 @@ PartitionType getPartitionType(const PartitionTypeIndicator& p, int i,
     return p.getPartitionType(Entity<3>(grid, i, true));
 }
 
+// Row entries of Opm::SparseTable<int> are visited through this iterator type.
+int getIndex(std::vector<int>::const_iterator i)
+{
+    return *i;
+}
+
 int getIndex(const int* i)
 {
     return *i;
@@ -334,7 +395,7 @@ struct FaceTagNormalHandle
     template<class T>
     std::size_t size(const T&)
     {
-        return 4; // 3 coordinates + 1 volume
+        return 1; // one DataType (tag + normal) per face
     }
     template<class B, class T>
     void gather(B& buffer, const T& t)
@@ -934,7 +995,8 @@ struct AttributeDataHandle
 
     bool fixedSize()
     {
-        return true;
+        // SparseTable rows have varying length (all points of a cell).
+        return false;
     }
     std::size_t size(std::size_t i)
     {
@@ -943,8 +1005,7 @@ struct AttributeDataHandle
     template<class B>
     void gather(B& buffer, std::size_t i)
     {
-        typedef typename GetRowType<T>::type::const_iterator RowIter;
-        for(RowIter f=c2e_[i].begin(), fend=c2e_[i].end();
+        for(auto f=c2e_[i].begin(), fend=c2e_[i].end();
             f!=fend; ++f)
         {
             char t=getPartitionType(indicator_, *f, grid_);
@@ -955,8 +1016,7 @@ struct AttributeDataHandle
     template<class B>
     void scatter(B& buffer, std::size_t i, std::size_t s)
     {
-        typedef typename GetRowType<T>::type::const_iterator RowIter;
-        for(RowIter f=c2e_[i].begin(), fend=c2e_[i].end();
+        for(auto f=c2e_[i].begin(), fend=c2e_[i].end();
             f!=fend; ++f, --s)
         {
             std::pair<int,char> rank_attr;
@@ -1559,6 +1619,22 @@ void CpGridData::distributeGlobalGrid(CpGrid& grid,
     DefaultContainerHandle<std::vector<int> > indexHandle(view_data.global_cell_, global_cell_);
     grid.scatterData(indexHandle);
 
+    // Communicate the per-cell index-in-parent-cell. For refine-before-
+    // redistribute the distributed grid is the flat refined leaf (no level
+    // hierarchy), so this is the only thing that still distinguishes refined
+    // sibling cells - which share a parent Cartesian index in global_cell_ -
+    // for the output collection (which otherwise collides on global_cell_).
+    // The scatter is collective, and the full refined leaf lives only on rank 0
+    // (other ranks may hold an empty placeholder), so decide collectively: a
+    // coarse/level-zero source grid carries this on no rank, leaving the array
+    // empty to mark an unrefined distributed grid.
+    if (ccobj_.max(view_data.cell_to_idxInParentCell_.empty() ? 0 : 1)) {
+        cell_to_idxInParentCell_.assign(cell_indexset.size(), -1);
+        DefaultContainerHandle<std::vector<int> >
+            idxInParentHandle(view_data.cell_to_idxInParentCell_, cell_to_idxInParentCell_);
+        grid.scatterData(idxInParentHandle);
+    }
+
     // Scatter face tags, normals, and boundary ids.
     auto noBids = view_data.unique_boundary_ids_.size();
     bool hasBids = ccobj_.max(noBids);
@@ -1697,10 +1773,40 @@ void CpGridData::computeCommunicationInterfaces([[maybe_unused]] int noExistingP
     face_interfaces_);
     std::vector<std::map<int,char> >().swap(face_attributes);
     */
+    // Build the point (codim 3) communication interface from ALL points of
+    // each cell -- every node of every face -- not only the eight canonical
+    // corners stored in cell_to_point_.  On corner-point grids with hanging
+    // nodes a face can reference nodes that are not canonical corners of the
+    // neighbouring cell; interfaces built from the canonical corners only
+    // miss those nodes, leaving them without communication (node ownership
+    // then fails to be a partition of unity).
+    // The gather/scatter of AttributeDataHandle pairs entries of the
+    // sender's and the receiver's row for the same cell BY POSITION, so the
+    // rows must list the points in an order that is identical on every rank
+    // sharing the cell.  Local point indices differ between ranks; the
+    // face/point traversal order is copied from the global grid during
+    // distribution and is rank-independent.  Deduplicate while preserving
+    // the first-occurrence traversal order -- do NOT sort by local index.
+    const std::size_t nc = cell_to_point_.size();
+    std::vector<int> points;
+    for (std::size_t cell = 0; cell < nc; ++cell) {
+        points.clear();
+        const auto& faces = cell_to_face_[cpgrid::EntityRep<0>(cell, true)];
+        const int nf = faces.size();
+        for (int f = 0; f < nf; ++f) {
+            for (const auto& fv : face_to_point_[faces[f].index()]) {
+                if (std::find(points.begin(), points.end(), fv) == points.end()) {
+                    points.push_back(fv);
+                }
+            }
+        }
+        cell_to_allpoint_.appendRow(points.begin(), points.end());
+    }
+
     std::vector<std::map<int,char> > point_attributes(noExistingPoints);
-    AttributeDataHandle<std::vector<std::array<int,8> > >
+    AttributeDataHandle<Opm::SparseTable<int> >
         point_handle(ccobj_.rank(), *partition_type_indicator_,
-                     point_attributes, cell_to_point_, *this);
+                     point_attributes, cell_to_allpoint_, *this);
     if( static_cast<const Dune::Interface&>(std::get<All_All_Interface>(cell_interfaces_))
         .interfaces().size() )
     {
@@ -1714,7 +1820,7 @@ void CpGridData::computeCommunicationInterfaces([[maybe_unused]] int noExistingP
 std::array<Dune::FieldVector<double,3>,8> CpGridData::getReferenceRefinedCorners(int idx_in_parent_cell, const std::array<int,3>& cells_per_dim) const
 {
     // Refined cells in parent cell: k*cells_per_dim[0]*cells_per_dim[1] + j*cells_per_dim[0] + i
-    std::array<int,3> ijk = Opm::Lgr::getIJK(idx_in_parent_cell, cells_per_dim);
+    std::array<int,3> ijk = cartesianIjk(idx_in_parent_cell, cells_per_dim);
 
     std::array<Dune::FieldVector<double,3>,8> corners_in_parent_reference_elem = { // corner '0'
         {{ double(ijk[0])/cells_per_dim[0], double(ijk[1])/cells_per_dim[1], double(ijk[2])/cells_per_dim[2] },
@@ -1750,220 +1856,19 @@ void CpGridData::getIJK(int c, std::array<int,3>& ijk) const
     // of the original level-zero grid.
 
     if (level_) { // refined level grids with level > 0
-        ijk = Opm::Lgr::getIJK(global_cell_[c], logical_cartesian_size_);
+        ijk = cartesianIjk(global_cell_[c], logical_cartesian_size_);
     }
     else { // level zero and leaf grids
-        ijk = Opm::Lgr::getIJK(global_cell_[c], level_data_ptr_->front()->logicalCartesianSize());
+        ijk = cartesianIjk(global_cell_[c], level_data_ptr_->front()->logicalCartesianSize());
     }
 }
 
-bool CpGridData::hasNNCs(const std::vector<int>& cellIndices) const
-{
-    bool hasNNC = false;
-    for (const auto cellIdx : cellIndices)
-    {
-        bool cellHasNNC = false;
-        Dune::cpgrid::Entity<0> entity(*this, cellIdx, true);
-        auto cellFaces = this->cell_to_face_[entity];
-        for (const auto face : cellFaces) {
-            Dune::cpgrid::Entity<1> f(face.index(), true);
-            enum face_tag tag = this->face_tag_[f];
-            if (tag == face_tag::NNC_FACE) {
-                cellHasNNC = true;
-                break;
-            }
-        }
-        hasNNC = hasNNC || cellHasNNC;
-        if (hasNNC){
-            break;
-        }
-    }
-    return hasNNC;
-}
 
-std::tuple< const std::shared_ptr<CpGridData>,
-            const std::vector<std::array<int,2>>>               // parent_to_refined_corners(~boundary_old_to_new_corners)
-CpGridData::refineSingleCell(const std::array<int,3>& cells_per_dim,
-                             const int& parent_idx,
-                             std::vector<std::vector<std::pair<int, std::vector<int>>>>& faceInMarkedElemAndRefinedFaces) const
-{
-    // To store the LGR/refined-grid.
-    std::vector<std::shared_ptr<CpGridData>> refined_data;
-    std::shared_ptr<CpGridData> refined_grid_ptr = std::make_shared<CpGridData>(refined_data); // ccobj_
-    auto& refined_grid = *refined_grid_ptr;
-    DefaultGeometryPolicy& refined_geometries = refined_grid.geometry_;
-    std::vector<std::array<int,8>>& refined_cell_to_point = refined_grid.cell_to_point_;
-    cpgrid::OrientedEntityTable<0,1>& refined_cell_to_face = refined_grid.cell_to_face_;
-    Opm::SparseTable<int>& refined_face_to_point = refined_grid.face_to_point_;
-    cpgrid::OrientedEntityTable<1,0>& refined_face_to_cell = refined_grid.face_to_cell_;
-    cpgrid::EntityVariable<enum face_tag,1>& refined_face_tags = refined_grid.face_tag_;
-    cpgrid::SignedEntityVariable<Dune::FieldVector<double,3>,1>& refined_face_normals = refined_grid.face_normals_;
-   
-    const auto& parent_to_point = this->cell_to_point_[parent_idx];
-    Opm::Lgr::containsEightDifferentCorners(parent_to_point); // refinement supported only for hexahedron
-    
-    // Refine parent cell
-    const auto parentCellElem = Entity<0>(*this, parent_idx, true);
-    const cpgrid::Geometry<3,3>& parentCellGeom = (*(geometry_.geomVector(std::integral_constant<int,0>())))[parentCellElem];
-    parentCellGeom.refineCellifiedPatch(cells_per_dim, refined_geometries, refined_cell_to_point, refined_cell_to_face,
-                                        refined_face_to_point, refined_face_to_cell, refined_face_tags, refined_face_normals,
-                                        {1,1,1}, /*widthX, lengthY, heightZ*/ {1.}, {1.}, {1.});
-    
-    const std::vector<std::array<int,2>>& parent_to_refined_corners{
-        // corIdx (J*(cells_per_dim[0]+1)*(cells_per_dim[2]+1)) + (I*(cells_per_dim[2]+1)) +K
-        // replacing parent-cell corner '0' {0,0,0}
-        {parent_to_point[0], 0},
-        // replacing parent-cell corner '1' {cells_per_dim[0], 0, 0}
-        {parent_to_point[1], cells_per_dim[0]*(cells_per_dim[2]+1)},
-        // replacing parent-cell corner '2' {0, cells_perd_dim[1], 0}
-        {parent_to_point[2], cells_per_dim[1]*(cells_per_dim[0]+1)*(cells_per_dim[2]+1)},
-        // replacing parent-cell corner '3' {cells_per_dim[0], cells_per_dim[1], 0}
-        {parent_to_point[3], (cells_per_dim[1]*(cells_per_dim[0]+1)*(cells_per_dim[2]+1)) + (cells_per_dim[0]*(cells_per_dim[2]+1))},
-        // replacing parent-cell corner '4' {0, 0, cells_per_dim[2]}
-        {parent_to_point[4], cells_per_dim[2]},
-        // replacing parent-cell corner '5' {cells_per_dim[0], 0, cells_per_dim[2]}
-        {parent_to_point[5], (cells_per_dim[0]*(cells_per_dim[2]+1)) + cells_per_dim[2]},
-        // replacing parent-cell corner '6' {0, cells_per_dim[1], cells_per_dim[2]}
-        {parent_to_point[6], (cells_per_dim[1]*(cells_per_dim[0]+1)*(cells_per_dim[2]+1)) + cells_per_dim[2]},
-        // replacing parent-cell corner '7' {cells_per_dim[0], cells_per_dim[1], cells_per_dim[2]}
-        {parent_to_point[7], (cells_per_dim[1]*(cells_per_dim[0]+1)*(cells_per_dim[2]+1)) + (cells_per_dim[0]*(cells_per_dim[2]+1))
-         + cells_per_dim[2]}};
-   
-    const auto& parent_cell_to_face = (this-> cell_to_face_[parentCellElem]);
-    // To store relation old-face to new-born-faces (children faces).
-    std::vector<std::tuple<int,std::vector<int>>>  parent_to_children_faces;
-    parent_to_children_faces.reserve(6);
-    // Auxiliary integers to simplify new-born-face-index notation.
-    const int& k_faces = cells_per_dim[0]*cells_per_dim[1]*(cells_per_dim[2]+1);
-    const int& i_faces = (cells_per_dim[0]+1)*cells_per_dim[1]*cells_per_dim[2];
-    // Populate parent_to_children_faces
-    for (const auto& face : parent_cell_to_face) {
-        // Check face tag to identify the type of face (bottom, top, left, right, front, or back).
-        const auto& parent_face_tag = (this-> face_tag_[Dune::cpgrid::EntityRep<1>(face.index(), true)]);
-        // To store the new born faces for each face.
-        std::vector<int> children_faces; // Cannot reserve/resize "now", it depends of the type of face.
-        // K_FACES
-        if (parent_face_tag == face_tag::K_FACE) {
-            children_faces.reserve(cells_per_dim[0]*cells_per_dim[1]);
-            for (int j = 0; j < cells_per_dim[1]; ++j) {
-                for (int i = 0; i < cells_per_dim[0]; ++i) {
-                    int child_face;
-                    if (!face.orientation()) // false -> BOTTOM FACE -> k=0
-                        child_face = (j*cells_per_dim[0]) + i;
-                    else // true -> TOP FACE -> k=cells_per_dim[2]
-                        child_face = (cells_per_dim[2]*cells_per_dim[0]*cells_per_dim[1]) +(j*cells_per_dim[0]) + i;
-                    children_faces.push_back(child_face);
-                } // i-for-lopp
-            } //j-for-loop
-        } // if-K_FACE
-        // I_FACES
-        if (parent_face_tag == face_tag::I_FACE) {
-            children_faces.reserve(cells_per_dim[1]*cells_per_dim[2]);
-            for (int k = 0; k < cells_per_dim[2]; ++k) {
-                for (int j = 0; j < cells_per_dim[1]; ++j) {
-                    int child_face;
-                    if (!face.orientation()) // false -> LEFT FACE -> i=0
-                        child_face = k_faces + (k*cells_per_dim[1]) + j;
-                    else // true -> RIGHT FACE -> i=cells_per_dim[0]
-                        child_face = k_faces + (cells_per_dim[0]*cells_per_dim[1]*cells_per_dim[2]) + (k*cells_per_dim[1]) + j;
-                    children_faces.push_back(child_face);
-                } // j-for-loop
-            } // k-for-loop
-        } // if-I_FACE
-        // J_FACES
-        if (parent_face_tag == face_tag::J_FACE) {
-            children_faces.reserve(cells_per_dim[0]*cells_per_dim[2]);
-            for (int i = 0; i < cells_per_dim[0]; ++i) {
-                for (int k = 0; k < cells_per_dim[2]; ++k) {
-                    int child_face;
-                    if (!face.orientation()) // false -> FRONT FACE -> j=0
-                        child_face = k_faces + i_faces + (i*cells_per_dim[2]) + k;
-                    else  // true -> BACK FACE -> j=cells_per_dim[1]
-                        child_face = k_faces + i_faces  + (cells_per_dim[1]*cells_per_dim[0]*cells_per_dim[2])
-                            + (i*cells_per_dim[2]) + k;
-                    children_faces.push_back(child_face);
-                } // k-for-loop
-            } // i-for-loop
-        } // if-J_FACE
-        faceInMarkedElemAndRefinedFaces[face.index()].push_back(std::make_pair(parentCellElem.index(), children_faces));
-    }
-    return {refined_grid_ptr, parent_to_refined_corners};
-}
 
-bool CpGridData::mark(int refCount, const cpgrid::Entity<0>& element, bool throwOnFailure)
-{
-    if (refCount == -1) {
-        if (throwOnFailure)
-            OPM_THROW(std::logic_error, "Coarsening is not supported yet.");
-        return false; // Coarsening is not supported yet.
-    }
-    // Prevent refinement if the cell has a non-neighbor connection (NNC).
-    if (hasNNCs({element.index()}) && (refCount == 1)) {
-        if (throwOnFailure)
-            OPM_THROW(std::logic_error, "Refinement of cells with face representing an NNC is not supported yet.");
-        return false;
-    }
-    assert((refCount == 0) || (refCount == 1)); // Do nothing (0), Refine (1), Coarsen (-1) not supported yet.
-    if (mark_.empty()) {
-        mark_.resize(this->size(0));
-    }
-    mark_[element.index()] = refCount;
-    return (mark_[element.index()] == refCount);
-}
 
-int CpGridData::getMark(const cpgrid::Entity<0>& element) const
-{
-    return mark_.empty() ? 0 : mark_[element.index()];
-}
 
-bool CpGridData::preAdapt()
-{
-    // Communicate marked elements across all processes.
-    if (ccobj_.size()>1) {
 
-        auto local_empty = mark_.empty();
-        // The attribute mark_ can be empty in processes with no elements marked
-        // for refinement. In that case, resize before communication occurs.
-        if (ccobj_.max(!local_empty)){
-            if (local_empty)
-                mark_.resize(size(0));
-        }
 
-        // Detect the maximum mark across processes, and rewrite
-        // the local entry in mark_, i.e.,
-        // mark_[ element.index() ] = max{ local marks in processes where this element belongs to}.
-        ElementMarkHandle element_mark_handle(mark_);
-
-        // An element may be marked somewhere in opm-simulators because it does not fulfill a
-        // certain property, regardless of whether it belongs to the interior or overlap
-        // partition. Therefore, we use the All_All_Interface.
-        communicate(element_mark_handle,
-                    Dune::All_All_Interface,
-                    Dune::ForwardCommunication);
-    }
-
-    if(mark_.empty()) {
-        return false;
-    }
-    else {
-        for (int elemIdx = 0; elemIdx <  this-> size(0); ++elemIdx) {
-            const auto& element = Dune::cpgrid::Entity<0>(*this, elemIdx, true);
-            if (getMark(element) != 0)  // 1 (to be refined), 0 (do nothing), -1 (to be coarsened - not supported yet)
-                return true;
-        }
-    }
-    return false;
-}
-
-bool CpGridData::adapt()
-{
-    return preAdapt();
-}
-
-void CpGridData::postAdapt()
-{
-    mark_.resize(this->size(0), 0);
-}
 
 std::array<double,3> CpGridData::computeEclCentroid(const int idx) const
 {

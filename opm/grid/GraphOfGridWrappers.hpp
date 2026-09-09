@@ -122,6 +122,13 @@ void addWellConnections(GraphOfGrid<Dune::CpGrid>& gog,
                         const Dune::cpgrid::WellConnections& wells,
                         bool checkWellIntersections=true);
 
+/// \brief Contract the grid's partition cell groups into single vertices.
+///
+/// Reads CpGrid::partitionCellGroups() (Cartesian cell-id sets the
+/// partitioner must keep on one rank, e.g. LGR refinement boxes), converts
+/// them to compressed ids and contracts each into one graph vertex.
+void addPartitionCellGroups(GraphOfGrid<Dune::CpGrid>& gog);
+
 /// \brief Correct gIDtoRank's data about well cells
 ///
 /// gIDtoRank's entries come from Zoltan partitioner's export list

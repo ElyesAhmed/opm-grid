@@ -56,6 +56,7 @@
 
 #include <opm/grid/utility/OpmWellType.hpp>
 
+#include <cstdint>
 #include <set>
 
 namespace Opm
@@ -370,6 +371,51 @@ namespace Dune
         /// from whence the current CpGrid was constructed.
         const std::vector<int>& globalCell() const;
 
+        /// Construction-stable, globally-unique id per cell of the current view
+        /// (the "D3" id). Unlike globalCell(), this disambiguates refined
+        /// siblings (which share their parent's Cartesian index), so it can key
+        /// per-cell output gathered across MPI ranks. See
+        /// CpGridData::stableCellId().
+        std::vector<std::int64_t> stableCellId() const;
+
+        /// @brief Propagate a level-zero cell partition to the leaf cells.
+        ///
+        /// For refine-before-redistribute: the coarse (level-zero) grid is
+        /// partitioned with the existing machinery, then every leaf cell is
+        /// assigned the rank of its coarse parent. A leaf cell's parent is
+        /// recovered from its global_cell_ (which holds the parent's Cartesian
+        /// index) inverted through level zero's globalCell(). Because the LGR
+        /// partition cell groups keep each box's coarse cells on one rank, the
+        /// propagated partition is rank-interior by construction.
+        /// @param level0Part  partition (rank per cell) of the level-zero grid,
+        ///                     indexed by level-zero compressed cell index.
+        /// @return rank per leaf cell, indexed by leaf compressed cell index.
+        std::vector<int> leafPartitionFromLevelZero(const std::vector<int>& level0Part) const;
+
+        /// @brief Canary for LGR field-property handling: poison every refined
+        /// leaf cell's global Cartesian index with a negative sentinel so any
+        /// late re-derivation of its properties from the (parent) Cartesian
+        /// index fails loudly. Diagnostic / opt-in; see
+        /// CpGridData::poisonRefinedGlobalCell.
+        void poisonRefinedGlobalCell(int sentinel = -1);
+
+        /// @brief Whether the grid has been scattered across MPI ranks yet.
+        /// False for the global (pre-load-balance) grid and for self-comm
+        /// reference grids; true once doLoadBalance_/scatterGrid has populated
+        /// distributed_data_. Used by the refinement builder to decide between
+        /// the rank-interior (distributed) and serial (refine-before-
+        /// redistribute / output-grid) refinement paths.
+        bool isDistributed() const { return !distributed_data_.empty(); }
+
+        /// @brief Whether the current (leaf) view carries per-cell
+        /// index-in-parent data, i.e. it contains refined cells. True for the
+        /// refine-before-redistribute distributed leaf, which has refined cells
+        /// but no level hierarchy (maxLevel() == 0), so the output collection
+        /// cannot rely on maxLevel()/getLevelCartesianIdx() to detect refinement
+        /// there. The per-cell index-in-parent is scattered in
+        /// CpGridData::distributeGlobalGrid for exactly this purpose.
+        bool leafHasParentCellIndices() const;
+
         /// @brief Returns either data_ or distributed_data_(if non empty).
         const std::vector<std::shared_ptr<Dune::cpgrid::CpGridData>>& currentData() const;
 
@@ -577,55 +623,14 @@ namespace Dune
         ///        Returns true if the grid has changed, false otherwise.
         bool adapt();
 
-        /// @brief Triggers the grid refinement process, allowing to select diffrent refined level grids.
-        ///
-        /// @param [in] throwOnFailure       If true, throws an error when elements are marked for refinement but not
-        ///                                  actually refined during addLgrsUpdateLeafView() or autoRefine().
-        ///                                  This can occur, for example, for aquifer cells and connections, which
-        ///                                  may be marked ("1"). For globalRefine() and adapt(), this
-        ///                                  should be false, and such elements are ignored.
-        /// @param [in] cells_per_dim_vec    For each set of marked elements for refinement, that will belong to a same
-        ///                                  refined level grid, number of (refined) cells in each direction that each
-        ///                                  parent cell should be refined to.
-        /// @param [in] assignRefinedLevel   Vector with size equal to total amount of cells of the starting grid where
-        ///                                  the marked elements belong. In each entry, the refined level grid where the
-        ///                                  refined entities of the (parent) marked element should belong is stored.
-        /// @param [in] lgr_name_vec         Each refined level grid name, e.g. {"LGR1", "LGR2"}.
-        /// @param [in] startIJK_vec         Default empty vector. When isCARFIN, the starting ijk Cartesian index of each
-        ///                                  block of cells to be refined.
-        /// @param [in] endIJK_vec           Default empty vector. When isCARFIN, the final ijk Cartesian index of each
-        ///                                  block of cells to be refined.
-        bool refineAndUpdateGrid(bool throwOnFailure,
-                                 const std::vector<std::array<int,3>>& cells_per_dim_vec,
-                                 const std::vector<int>& assignRefinedLevel,
-                                 const std::vector<std::string>& lgr_name_vec,
-                                 const std::vector<std::array<int,3>>& startIJK_vec = std::vector<std::array<int,3>>{},
-                                 const std::vector<std::array<int,3>>& endIJK_vec = std::vector<std::array<int,3>>{});
 
         /// @brief Clean up refinement markers - set every element to the mark 0 which represents 'doing nothing'
         void postAdapt();
         /// --------------- Adaptivity (end) ---------------
 
     private:
-        void updateCornerHistoryLevels(const std::vector<std::vector<std::array<int,2>>>& cornerInMarkedElemWithEquivRefinedCorner,
-                                       const std::map<std::array<int,2>,std::array<int,2>>& elemLgrAndElemLgrCorner_to_refinedLevelAndRefinedCorner,
-                                       const std::unordered_map<int,std::array<int,2>>& adaptedCorner_to_elemLgrAndElemLgrCorner,
-                                       const int& corner_count,
-                                       const std::vector<std::array<int,2>>& preAdaptGrid_corner_history,
-                                       const int& preAdaptMaxLevel,
-                                       const int& newLevels);
 
-        void globalIdsPartitionTypesLgrAndLeafGrids(const std::vector<int>& assignRefinedLevel,
-                                                    const std::vector<std::array<int,3>>& cells_per_dim_vec,
-                                                    const std::vector<int>& lgr_with_at_least_one_active_cell);
 
-        /// @brief Retrieves the global ids of the first child for each parent cell in the grid.
-        ///
-        /// If a cell has no children, its entry is set to -1, indicating an invalid id.
-        ///
-        /// @param[out] parentToFirstChildGlobalIds A vector that will be filled with the first child global IDs.
-        ///                                         The vector is resized to match the number of parent cells.
-        void getFirstChildGlobalIds([[maybe_unused]] std::vector<int>& parentToFirstChildGlobalIds);
     public:
         /// @brief Synchronizes cell global ids across processes after load balancing.
         ///
@@ -635,52 +640,12 @@ namespace Dune
         void syncDistributedGlobalCellIds();
     private:
 
-        /// @brief For refined level grids created based on startIJK and endIJK values, compute the "local ijk/Cartesian index" within the LGR.
-        ///
-        /// It's confusing that this "localIJK" is stored in CpGridData member global_cell_. Potential explanation: level zero grid is also called
-        /// "GLOBAL" grid.
-        /// Example: a level zero grid with dimension 4x3x3, an LGR with startIJK = {1,2,2}, endIJK = {3,3,3}, and cells_per_dim = {2,2,2}.
-        /// Then the dimension of the LGR is (3-1)*2 x (3-2)*2 x (3-2)* 2 = 4x2x2 = 16. Therefore the global_cell_lgr minimim value should be 0,
-        /// the maximum should be 15.
-        /// To invoke this method, each refined level grid must have 1. logical_cartesian_size_, 2. cell_to_idxInParentCell_, and 3. cells_per_dim_
-        /// already populated.
-        ///
-        /// @param [in] level    Grid index where LGR is stored
-        /// @param [out] global_cell_lgr
-        void computeGlobalCellLgr(const int& level, const std::array<int,3>& startIJK, std::vector<int>& global_cell_lgr);
 
-        /// @brief For a leaf grid with with LGRs, we assign the global_cell_ values of either the parent cell or the equivalent cell from
-        ///        level zero.
-        ///        For nested refinement, we lookup the oldest ancestor, from level zero.
-        void computeGlobalCellLeafGridViewWithLgrs(std::vector<int>& global_cell_leaf);
 
     private:
-        /// @brief Mark selected elements, assign them their corresponding level, and detect active LGRs.
-        ///
-        /// Given blocks of cells selected for refinement, mark selected elements and assign them their corresponding
-        /// (refined) level (grid). When level zero grid is distributed before refinement, detect which LGRs are active
-        /// in each process.
-        ///
-        /// @param [in] startIJK_vec    Vector of ijk values denoting the start of each block of cells selected for refinement.
-        /// @param [in] endIJK_vec      Vector of ijk values denoting the end of each block of cells selected for refinement.
-        /// @param [out] assignRefinedLevel   Assign level for the refinement of each marked cell. Example: refined element from
-        ///                                   LGR1 have level 1, refined element rfom LGR2 have level 2, etc.
-        /// @param [out] lgr_with_at_least_one_active_cell Determine if an LGR is not empty in a given process, we set
-        ///                                                lgr_with_at_least_one_active_cell[in that level] to 1 if it contains
-        ///                                                at least one active cell, and to 0 otherwise.
-        void markElemAssignLevelDetectActiveLgrs(const std::vector<std::array<int,3>>& startIJK_vec,
-                                                 const std::vector<std::array<int,3>>& endIJK_vec,
-                                                 std::vector<int>& assignRefinedLevel,
-                                                 std::vector<int>& lgr_with_at_least_one_active_cell);
 
-        /// @brief For a grid whose level zero has been distributed and then locally refined, populate the cell_index_set_ of each refined level grid.
-        void populateCellIndexSetRefinedGrid(int level);
 
-        /// @brief For a grid whose level zero has been distributed and then locally refined, populate the cell_index_set_ of the leaf grid view.
-        void populateCellIndexSetLeafGridView();
 
-        /// @brief For a grid whose level zero has been distributed and then locally refined, populate the global_id_set_ of the leaf grid view.
-        void populateLeafGlobalIdSet();
 
     public:
 
@@ -710,6 +675,26 @@ namespace Dune
         unsigned int numBoundarySegments() const;
 
         void setPartitioningParams(const std::map<std::string,std::string>& params);
+
+        /// \brief Groups of cells that load balancing must keep on one rank.
+        ///
+        /// Each group is a set of global (Cartesian) cell indices. The
+        /// graph partitioner contracts every group into a single vertex
+        /// (the same mechanism used for well cells), so the group is never
+        /// split across processes. Set before loadBalance(). Intended for
+        /// LGR refinement boxes: keeping a box on one rank means the
+        /// refinement builder never has to split a box across ranks
+        /// (docs/PLAN.md Track 1 step 6).
+        void setPartitionCellGroups(std::vector<std::set<int>> cellGroups)
+        {
+            partition_cell_groups_ = std::move(cellGroups);
+        }
+
+        /// \brief The cell groups load balancing must keep together (Cartesian ids).
+        const std::vector<std::set<int>>& partitionCellGroups() const
+        {
+            return partition_cell_groups_;
+        }
 
         // loadbalance is not part of the grid interface therefore we skip it.
 
@@ -961,9 +946,16 @@ namespace Dune
                     bool allowDistributedWells = false,
                     bool useTransToFilterOverlap = true)
         {
+            // refine-before-redistribute: if the grid is already refined at
+            // load-balance time (maxLevel() > 0) we are on the experimental
+            // refine-then-distribute path - distribute the leaf (level == -1)
+            // so scatterGrid takes the leaf scaffolding. In every other flow
+            // the grid is still coarse here (rank-interior refines later, in
+            // addLgrs()), so this stays level 0 and nothing else changes.
+            const int balanceLevel = (this->maxLevel() > 0) ? -1 : 0;
             auto ret = scatterGrid(method, ownersFirst, wells, possibleFutureConnections, serialPartitioning, transmissibilities,
                                    addCornerCells, overlapLayers, partitionMethod, imbalanceTol, allowDistributedWells,
-                                   /* input_cell_parts = */ std::vector<int>{}, /* level = */ 0,
+                                   /* input_cell_parts = */ std::vector<int>{}, /* level = */ balanceLevel,
                                    useTransToFilterOverlap);
             using std::get;
             if (get<0>(ret))
@@ -1229,6 +1221,9 @@ namespace Dune
         ///  of the vertex.
         int faceVertex(int face, int local_index) const;
 
+
+        /// \brief Get maps from vertexToCell out[0] and cellToVertex out[1];
+        std::array< std::vector< std::set<int> >, 2 > vertexCell() const;
         /// \brief Get vertical position of cell center ("zcorn" average).
         /// \brief cell_index The index of the specific cell.
         double cellCenterDepth(int cell_index) const;
@@ -1518,6 +1513,11 @@ namespace Dune
          */
         std::map<std::string,std::string> partitioningParams;
 
+        /**
+         * @brief Cell groups (Cartesian ids) the partitioner must keep on one rank.
+         */
+        std::vector<std::set<int>> partition_cell_groups_;
+
     }; // end Class CpGrid
 
 } // end namespace Dune
@@ -1581,7 +1581,12 @@ namespace Dune
         if (distributed_data_.empty()) {
             OPM_THROW(std::runtime_error, "Moving Data only allowed with a load balanced grid!");
         } else {
-            distributed_data_[0]->scatterData(handle, data_[0].get(),
+            // The grid that was distributed is the current (global) view that
+            // scatterGrid worked on, i.e. data_.back(): level zero for an
+            // unrefined grid and the rank-interior path (where data_.back() ==
+            // data_[0]), the refined leaf for refine-before-redistribute. Use it
+            // as the source so the gather addresses the scattered cells.
+            distributed_data_[0]->scatterData(handle, data_.back().get(),
                                               distributed_data_[0].get(),
                                               cellScatterGatherInterface(),
                                               pointScatterGatherInterface());

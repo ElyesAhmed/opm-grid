@@ -79,26 +79,17 @@ macro(opm-grid_tests_hook)
   # Additional parallel tests
   if(MPI_FOUND)
     set(tests_4proc
-      addLgrsOnDistributedGrid_test
-      autoRefine_test
       distribution_test
-      level_and_grid_cartesianIndexMappers_test
-      logicalCartesianSize_and_refinement_test
+      partition_of_unity_test
       test_communication_utils
-      id_entity_entityrep_test
+      partition_cell_groups_test
+      distributed_builder_test
     )
     if(USE_OPM_COMMON)
       list(APPEND tests_4proc
-        communicate_distributed_grid_with_lgrs_test
-        distribute_level_zero_from_grid_with_lgrs_test
-        distribute_level_zero_from_grid_with_lgrs_and_wells_test
-        grid_global_id_set_test
-        lgr_cell_id_sync_test
-        mapLevelIndicesToCartesianOutputOrder_test
       )
     endif()
 
-    list(APPEND test_4proc lgr_with_inactive_parent_cells_test)
     foreach(procs 3 4)
       add_test(
         NAME

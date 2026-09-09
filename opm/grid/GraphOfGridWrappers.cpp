@@ -190,6 +190,44 @@ void addWellConnections(GraphOfGrid<Dune::CpGrid>& gog,
     }
 }
 
+void addPartitionCellGroups(GraphOfGrid<Dune::CpGrid>& gog)
+{
+    const auto& grid = gog.getGrid();
+    const auto& groups = grid.partitionCellGroups();
+    if (groups.empty()) {
+        return;
+    }
+    // Groups are given as global (Cartesian) cell ids; the graph uses
+    // compressed ids. Build the inverse map once, in the level-zero index
+    // space - the same space the graph vertices and WellConnections::init use
+    // (currentData().front()). This is correct both for the rank-interior path
+    // (leaf == level zero) and for refine-before-redistribute, where the leaf
+    // is refined but the partition graph and the cell groups are level-zero
+    // Cartesian cells; using the leaf globalCell/numCells there would key the
+    // groups in the leaf index space and they would not match the graph.
+    const auto& level0 = *grid.currentData().front();
+    const auto& cpgdim = level0.logicalCartesianSize();
+    const auto& globalCell = level0.globalCell();
+    std::vector<int> cartesian_to_compressed(cpgdim[0]*cpgdim[1]*cpgdim[2], -1);
+    for (std::size_t i = 0; i < globalCell.size(); ++i) {
+        cartesian_to_compressed[globalCell[i]] = static_cast<int>(i);
+    }
+    for (const auto& group : groups) {
+        std::set<int> compressed;
+        for (const int cartesian : group) {
+            const int gID = cartesian_to_compressed[cartesian];
+            if (gID != -1) { // skip inactive cells of the group
+                compressed.insert(gID);
+            }
+        }
+        if (!compressed.empty()) {
+            // checkIntersection = true: groups may share cells (e.g. a well
+            // crossing a refinement box); overlapping groups are merged.
+            gog.addWell(compressed, /* checkWellIntersections = */ true);
+        }
+    }
+}
+
 void extendGIDtoRank(const GraphOfGrid<Dune::CpGrid>& gog,
                      std::vector<int>& gIDtoRank,
                      const int& root)
@@ -569,6 +607,8 @@ zoltanPartitioningWithGraphOfGrid(const Dune::CpGrid& grid,
         addWellConnections(gog, wellConnections);
         gog.addNeighboringCellsToWells(layers);
     }
+    // Keep LGR refinement boxes (and any other requested groups) on one rank.
+    addPartitionCellGroups(gog);
 
     // call partitioner
     setGraphOfGridZoltanGraphFunctions(zz, gog, partitionIsEmpty);
@@ -717,6 +757,8 @@ applySerialZoltan (const Dune::CpGrid& grid,
         addWellConnections(gog, wellConnections);
         gog.addNeighboringCellsToWells(layers);
     }
+    // Keep LGR refinement boxes (and any other requested groups) on one rank.
+    addPartitionCellGroups(gog);
 
     // call partitioner
     setGraphOfGridZoltanGraphFunctions(zz, gog, false);

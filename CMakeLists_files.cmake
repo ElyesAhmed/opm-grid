@@ -32,14 +32,19 @@ list(APPEND MAIN_SOURCE_FILES
   opm/grid/cpgrid/Intersection.cpp
   opm/grid/cpgrid/CpGridData.cpp
   opm/grid/cpgrid/CpGrid.cpp
-  opm/grid/cpgrid/CpGridUtilities.cpp
   opm/grid/cpgrid/DataHandleWrappers.cpp
   opm/grid/cpgrid/GridHelpers.cpp
   opm/grid/cpgrid/Iterators.cpp
   opm/grid/cpgrid/Indexsets.cpp
-  opm/grid/cpgrid/LgrHelpers.cpp
   opm/grid/cpgrid/LgrOutputHelpers.cpp
-  opm/grid/cpgrid/NestedRefinementUtilities.cpp
+  opm/grid/cpgrid/refinement/ConformingBlockBuilder.cpp
+  opm/grid/cpgrid/refinement/EdgeConformal.cpp
+  opm/grid/cpgrid/refinement/FaultedBoundaryFaces.cpp
+  opm/grid/cpgrid/refinement/GrdeclRefinement.cpp
+  opm/grid/cpgrid/refinement/LeafGridAssembler.cpp
+  opm/grid/cpgrid/refinement/GridStateWriter.cpp
+  opm/grid/cpgrid/refinement/LevelGridAssembler.cpp
+  opm/grid/cpgrid/refinement/RefinementBuilder.cpp
   opm/grid/cpgrid/PartitionTypeIndicator.cpp
   opm/grid/cpgrid/processEclipseFormat.cpp
   opm/grid/common/GridPartitioning.cpp
@@ -100,26 +105,24 @@ list(APPEND TEST_SOURCE_FILES
   tests/test_sparsetable.cpp
   tests/test_subgridpart.cpp
   tests/cpgrid/distribution_test.cpp
+  tests/cpgrid/partition_of_unity_test.cpp
   tests/cpgrid/entityrep_test.cpp
   tests/cpgrid/entity_test.cpp
   tests/cpgrid/facetag_test.cpp
   tests/cpgrid/geometry_test.cpp
+  tests/cpgrid/refinement_seam_test.cpp
+  tests/cpgrid/grdecl_refinement_test.cpp
+  tests/cpgrid/level_grid_assembler_test.cpp
+  tests/cpgrid/conforming_builder_test.cpp
+  tests/cpgrid/faulted_boundary_test.cpp
+  tests/cpgrid/edge_conformal_refinement_test.cpp
+  tests/cpgrid/refined_structure_comparison_test.cpp
+  tests/cpgrid/partition_cell_groups_test.cpp
+  tests/cpgrid/distributed_builder_test.cpp
   tests/cpgrid/orientedentitytable_test.cpp
   tests/cpgrid/partition_iterator_test.cpp
   tests/cpgrid/shifted_cart_test.cpp
   tests/cpgrid/zoltan_test.cpp
-  tests/cpgrid/lgr/adapt_cpgrid_test.cpp
-  tests/cpgrid/lgr/addLgrs_in_allActiveCartesianGrid_test.cpp
-  tests/cpgrid/lgr/addLgrsOnDistributedGrid_test.cpp
-  tests/cpgrid/lgr/autoRefine_test.cpp
-  tests/cpgrid/lgr/global_refine_test.cpp
-  tests/cpgrid/lgr/id_entity_entityrep_test.cpp
-  tests/cpgrid/lgr/level_and_grid_cartesianIndexMappers_test.cpp
-  tests/cpgrid/lgr/lgrs_sharing_faces_test.cpp
-  tests/cpgrid/lgr/logicalCartesianSize_and_refinement_test.cpp
-  tests/cpgrid/lgr/nested_refinement_test.cpp
-  tests/cpgrid/lgr/replace_lgr1_corner_idx_by_lgr2_corner_idx_test.cpp
-  tests/cpgrid/lgr/replace_lgr1_face_idx_by_lgr2_face_idx_test.cpp
 )
 
 if(USE_OPM_COMMON)
@@ -131,26 +134,6 @@ if(USE_OPM_COMMON)
     tests/cpgrid/eclCentroid_test.cpp
     tests/cpgrid/grid_nnc.cpp
     tests/cpgrid/grid_pinch.cpp
-    tests/cpgrid/lgr/aquifer_cells_and_conn_not_refined_test.cpp
-    tests/cpgrid/lgr/communicate_distributed_grid_with_lgrs_test.cpp
-    tests/cpgrid/lgr/consistent_vertex_order_in_face_test.cpp
-    tests/cpgrid/lgr/distribute_level_zero_from_grid_with_lgrs_test.cpp
-    tests/cpgrid/lgr/distribute_level_zero_from_grid_with_lgrs_and_wells_test.cpp
-    tests/cpgrid/lgr/grid_global_id_set_test.cpp
-    tests/cpgrid/lgr/getParentIntersectionFromLgrBoundaryFace_test.cpp
-    tests/cpgrid/lgr/levelCartToLevelCompressed_test.cpp
-    tests/cpgrid/lgr/lgr_cell_id_sync_test.cpp
-    tests/cpgrid/lgr/mapLevelIndicesToCartesianOutputOrder_test.cpp
-    tests/cpgrid/lgr/restrict_data_to_level_grids_test.cpp
-    tests/cpgrid/lgr/addLgrs_if_non_nnc_in_lgrs_test.cpp
-    tests/cpgrid/lgr/lgrIJK_test.cpp
-    tests/cpgrid/lgr/lgr_cartesian_idx_test.cpp
-    tests/cpgrid/lgr/lgr_coord_zcorn_test.cpp
-    tests/cpgrid/lgr/lgr_with_inactive_parent_cells_test.cpp
-    tests/cpgrid/lgr/lookUpCellCentroid_cpgrid_test.cpp
-    tests/cpgrid/lgr/lookupdataCpGrid_test.cpp
-    tests/cpgrid/lgr/refine_hexahedron_with_non_rectangular_faces_test.cpp
-    tests/cpgrid/lgr/save_lgr_coord_zcorn_test.cpp
   )
 endif()
 
@@ -195,7 +178,6 @@ list(APPEND PUBLIC_HEADER_FILES
   opm/grid/cpgrid/CartesianIndexMapper.hpp
   opm/grid/cpgrid/CpGridData.hpp
   opm/grid/cpgrid/CpGridDataTraits.hpp
-  opm/grid/cpgrid/CpGridUtilities.hpp
   opm/grid/cpgrid/DataHandleWrappers.hpp
   opm/grid/cpgrid/DefaultGeometryPolicy.hpp
   opm/grid/cpgrid/dgfparser.hh
@@ -206,17 +188,22 @@ list(APPEND PUBLIC_HEADER_FILES
   opm/grid/cpgrid/GlobalIdMapping.hpp
   opm/grid/cpgrid/GridHelpers.hpp
   opm/grid/cpgrid/LevelCartesianIndexMapper.hpp
-  opm/grid/cpgrid/NestedRefinementUtilities.hpp
   opm/grid/CpGrid.hpp
   opm/grid/cpgrid/Indexsets.hpp
   opm/grid/cpgrid/Intersection.hpp
   opm/grid/cpgrid/Iterators.hpp
-  opm/grid/cpgrid/LgrHelpers.hpp
   opm/grid/cpgrid/LgrOutputHelpers.hpp
-  opm/grid/cpgrid/ElementMarkHandle.hpp
+  opm/grid/cpgrid/refinement/ConformingBlockBuilder.hpp
+  opm/grid/cpgrid/refinement/EdgeConformal.hpp
+  opm/grid/cpgrid/refinement/FaultedBoundaryFaces.hpp
+  opm/grid/cpgrid/refinement/GrdeclRefinement.hpp
+  opm/grid/cpgrid/refinement/LeafGridAssembler.hpp
+  opm/grid/cpgrid/refinement/GridStateWriter.hpp
+  opm/grid/cpgrid/refinement/LevelGridAssembler.hpp
+  opm/grid/cpgrid/refinement/RefinementBuilder.hpp
+  opm/grid/cpgrid/refinement/RetainedCornerPointInput.hpp
+  opm/grid/cpgrid/refinement/RefinementRequest.hpp
   opm/grid/cpgrid/OrientedEntityTable.hpp
-  opm/grid/cpgrid/ParentToChildrenCellGlobalIdHandle.hpp
-  opm/grid/cpgrid/ParentToChildCellToPointGlobalIdHandle.hpp
   opm/grid/cpgrid/PartitionIteratorRule.hpp
   opm/grid/cpgrid/PartitionTypeIndicator.hpp
   opm/grid/cpgrid/PersistentContainer.hpp
