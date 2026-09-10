@@ -1768,17 +1768,26 @@ void CpGrid::addLgrsUpdateLeafView(const std::vector<std::array<int,3>>& cells_p
         OPM_THROW(std::invalid_argument, "Sizes of provided refinement vectors must match.");
     }
 
-    std::vector<Opm::Refinement::BlockRefinement> requests(numBoxes);
+    std::vector<Opm::Refinement::BlockRefinement> inputRequests(numBoxes);
     for (std::size_t box = 0; box < numBoxes; ++box) {
-        requests[box].name = lgr_name_vec[box];
+        inputRequests[box].name = lgr_name_vec[box];
         if (!lgr_parent_grid_name_vec.empty()) {
-            requests[box].parentGridName = lgr_parent_grid_name_vec[box];
+            inputRequests[box].parentGridName = lgr_parent_grid_name_vec[box];
         }
-        requests[box].cellsPerDim = cells_per_dim_vec[box];
-        requests[box].startIJK = startIJK_vec[box];
-        requests[box].endIJK = endIJK_vec[box];
+        inputRequests[box].cellsPerDim = cells_per_dim_vec[box];
+        inputRequests[box].startIJK = startIJK_vec[box];
+        inputRequests[box].endIJK = endIJK_vec[box];
     }
-    Opm::Refinement::validateBlockRefinements(requests);
+    Opm::Refinement::validateBlockRefinements(inputRequests);
+
+    // Merge axis-abutting boxes with identical subdivision factors into single
+    // blocks: N mutually adjacent boxes otherwise become N nested LGR levels
+    // (level 2, 3, ... 25 for a thin refined shell), whose coarse<->fine leaf
+    // transmissibilities are badly inconsistent (review 2026-09-10). Every
+    // original LGR name is remapped to the level of the box that absorbed it,
+    // so downstream name->level lookups still resolve.
+    const auto coalesced = Opm::Refinement::coalesceBlockRefinements(inputRequests);
+    const std::vector<Opm::Refinement::BlockRefinement>& requests = coalesced.merged;
 
     // In a distributed run the retained corner-point input exists only on
     // rank 0 (on the undistributed grid data_[0]); the scattered level zero
@@ -1848,8 +1857,14 @@ void CpGrid::addLgrsUpdateLeafView(const std::vector<std::array<int,3>>& cells_p
     const int preBuildMaxLevel = maxLevel();
     refinementBuilder->build(*this, requests);
 
+    // The merged boxes take levels preBuildMaxLevel+1 .. +requests.size(); map
+    // every original name onto the level of the merged box that covers it.
+    for (std::size_t m = 0; m < requests.size(); ++m) {
+        lgr_names_[requests[m].name] = preBuildMaxLevel + static_cast<int>(m) + 1;
+    }
     for (std::size_t box = 0; box < numBoxes; ++box) {
-        lgr_names_[requests[box].name] = preBuildMaxLevel + static_cast<int>(box) + 1;
+        lgr_names_[inputRequests[box].name] =
+            preBuildMaxLevel + coalesced.originalToMerged[box] + 1;
     }
     if (global_id_set_ptr_) {
         auto& data = currentData();

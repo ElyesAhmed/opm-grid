@@ -48,6 +48,24 @@ struct BlockRefinement
 /// Throws std::invalid_argument with a message naming the offending box(es).
 void validateBlockRefinements(const std::vector<BlockRefinement>& requests);
 
+/// Result of coalesceBlockRefinements(): the merged request list plus, for
+/// every input box, the index of the merged box that now covers it.
+struct CoalescedBlockRefinements
+{
+    std::vector<BlockRefinement> merged;
+    std::vector<int> originalToMerged;   // size == input.size()
+};
+
+/// Merge axis-abutting refinement boxes that share a parent grid AND have
+/// identical subdivision factors into single boxes whose union is a rectangular
+/// block. Each merged box becomes ONE LGR level instead of one level per input
+/// box -- N mutually adjacent 1-cell CARFIN boxes otherwise stack into N nested
+/// levels, whose coarse<->fine leaf transmissibilities are badly inconsistent
+/// (review 2026-09-10). The input must already be valid (disjoint). The merged
+/// name is the first contributing box's name.
+CoalescedBlockRefinements
+coalesceBlockRefinements(const std::vector<BlockRefinement>& requests);
+
 } // namespace Refinement
 } // namespace Opm
 
