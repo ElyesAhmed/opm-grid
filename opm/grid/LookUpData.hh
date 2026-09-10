@@ -155,9 +155,19 @@ public:
     auto getFieldPropIdx(const ElementType& elem) const;
 
 protected:
+    /// \brief Field-property index for a leaf element on a GENERAL (non-CpGrid)
+    ///        locally adapted grid: the level-0 ancestor's level-0 index (field
+    ///        properties are given for the unrefined macro grid). The level-0
+    ///        index set is stable under adapt().
+    template<typename Element>
+    int adaptedLevelZeroFieldPropIdx_(const Element& element) const;
+
     const GridView& gridView_;
     Dune::MultipleCodimMultipleGeomTypeMapper<GridView> elemMapper_;
     bool isFieldPropInLgr_;
+    //! leaf-index -> level-0 ancestor index, for a general adaptive grid
+    //! (non-CpGrid). Built lazily; rebuilt when the leaf size changes.
+    mutable std::vector<int> leafToLevelZero_;
 }; // end LookUpData class
 
 /// LookUpCartesianData - To search field properties of leaf grid view elements via CartesianIndex (cartesianMapper)
@@ -290,6 +300,20 @@ auto Opm::LookUpData<Grid,GridView>::operator()(const ElementOrIndex& elemIdx,
 }
 
 template<typename Grid, typename GridView>
+template<typename Element>
+int Opm::LookUpData<Grid,GridView>::adaptedLevelZeroFieldPropIdx_(const Element& element) const
+{
+    // General (non-CpGrid) locally adapted grid: field properties are given for
+    // the unrefined macro grid (level 0), so a refined leaf inherits its
+    // level-0 ancestor's value. The level-0 index set is stable under adapt().
+    auto ancestor = element;
+    while (ancestor.level() > 0) {
+        ancestor = ancestor.father();
+    }
+    return static_cast<int>(gridView_.grid().levelIndexSet(0).index(ancestor));
+}
+
+template<typename Grid, typename GridView>
 std::vector<double> Opm::LookUpData<Grid,GridView>::assignFieldPropsDoubleOnLeaf(const FieldPropsManager& fieldPropsManager,
                                                                                  const std::string& propString) const
 {
@@ -297,14 +321,20 @@ std::vector<double> Opm::LookUpData<Grid,GridView>::assignFieldPropsDoubleOnLeaf
     unsigned int numElements = gridView_.size(0);
     fieldPropOnLeaf.resize(numElements);
     const auto& fieldProp = fieldPropsManager.get_double(propString);
+    // For a general adaptive grid (ALUGrid etc.) with local refinement, look the
+    // field property up on the level-0 ancestor; getFieldPropIdx() only supports
+    // refinement for CpGrid.
+    constexpr bool generalGrid = !std::is_same_v<Grid, Dune::CpGrid>;
+    const bool adaptedGeneral = generalGrid && (gridView_.grid().maxLevel() > 0);
     if ( (propString == "PORV") && (gridView_.grid().maxLevel() > 0)) {
-        // PORV poreVolume. LGRs supported (so far) only for CpGrid.
-        // For CpGrid with LGRs, poreVolume of a cell on the leaf grid view which has a parent cell on level 0,
-        // is computed as  porv[parent] * leafCellVolume / parentCellVolume. In this way, the sum of the pore
-        // volume of a parent cell coincides with the sum of the pore volume of its children.
+        // PORV poreVolume. poreVolume of a leaf cell that has a parent cell on
+        // level 0 is  porv[ancestor] * leafCellVolume / ancestorCellVolume, so
+        // the children of a parent cell partition its pore volume.
         for (const auto& element : elements(gridView_)) {
             const auto& elemIdx = this-> elemMapper_.index(element);
-            const auto& fieldPropIdx = this->getFieldPropIdx<Grid>(elemIdx); // gets parentIdx (or (lgr)levelIdx) for CpGrid with LGRs
+            const int fieldPropIdx = adaptedGeneral
+                ? adaptedLevelZeroFieldPropIdx_(element)
+                : this->getFieldPropIdx<Grid>(elemIdx);
             if (element.hasFather()) {
                 const auto fatherVolume = element.father().geometry().volume();
                 const auto& elemVolume = element.geometry().volume();
@@ -318,7 +348,9 @@ std::vector<double> Opm::LookUpData<Grid,GridView>::assignFieldPropsDoubleOnLeaf
     else {
         for (const auto& element : elements(gridView_)) {
             const auto& elemIdx = this-> elemMapper_.index(element);
-            const auto& fieldPropIdx = this->getFieldPropIdx<Grid>(elemIdx); // gets parentIdx (or (lgr)levelIdx) for CpGrid with LGRs
+            const int fieldPropIdx = adaptedGeneral
+                ? adaptedLevelZeroFieldPropIdx_(element)
+                : this->getFieldPropIdx<Grid>(elemIdx);
             fieldPropOnLeaf[elemIdx] = fieldProp[fieldPropIdx];
         }
     }
@@ -336,9 +368,13 @@ std::vector<IntType> Opm::LookUpData<Grid,GridView>::assignFieldPropsIntOnLeaf(c
     unsigned int numElements = gridView_.size(0);
     fieldPropOnLeaf.resize(numElements);
     const auto& fieldProp = fieldPropsManager.get_int(propString);
+    constexpr bool generalGrid = !std::is_same_v<Grid, Dune::CpGrid>;
+    const bool adaptedGeneral = generalGrid && (gridView_.grid().maxLevel() > 0);
     for (const auto& element : elements(gridView_)) {
         const auto& elemIdx = this-> elemMapper_.index(element);
-        const auto& fieldPropIdx = this->getFieldPropIdx(elemIdx); // gets parentIdx (or (lgr)levelIdx) for CpGrid with LGRs
+        const int fieldPropIdx = adaptedGeneral
+            ? adaptedLevelZeroFieldPropIdx_(element)
+            : static_cast<int>(this->getFieldPropIdx(elemIdx));
         fieldPropOnLeaf[elemIdx] = fieldProp[fieldPropIdx] - needsTranslation;
         valueCheck(fieldProp[fieldPropIdx], fieldPropIdx);
     }
@@ -400,8 +436,22 @@ auto Opm::LookUpData<Grid,GridView>::getFieldPropIdx(const IndexType& elementOrI
     } else {
         static_assert(std::is_same_v<Grid,GridType>);
         if constexpr (isIntegral) {
-            // Check there are no LGRs. LGRs (level>0) only supported for CpGrid.
-            assert(gridView_.grid().maxLevel() == 0);
+            // General (non-CpGrid) locally adapted grid: a refined leaf inherits
+            // its level-0 ancestor's field property. Cache the leaf-index ->
+            // level-0-index map (built lazily, invalidated when the leaf size
+            // changes, i.e. after adapt()).
+            if (gridView_.grid().maxLevel() > 0) {
+                if (leafToLevelZero_.size() != gridView_.size(0)) {
+                    leafToLevelZero_.assign(gridView_.size(0), -1);
+                    for (const auto& e : elements(gridView_)) {
+                        auto anc = e;
+                        while (anc.level() > 0) { anc = anc.father(); }
+                        leafToLevelZero_[elemMapper_.index(e)] =
+                            static_cast<int>(gridView_.grid().levelIndexSet(0).index(anc));
+                    }
+                }
+                return static_cast<IndexType>(leafToLevelZero_[elementOrIndex]);
+            }
             return elementOrIndex;
         } else {
             assert(elementOrIndex.level() == 0); // LGRs (level>0) only supported for CpGrid.
