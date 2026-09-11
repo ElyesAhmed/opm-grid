@@ -41,7 +41,10 @@
 
 #include <opm/input/eclipse/EclipseState/Grid/FieldPropsManager.hpp>
 
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
+#include <new>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -154,6 +157,45 @@ public:
     template<typename GridType, typename ElementType>
     auto getFieldPropIdx(const ElementType& elem) const;
 
+    /// \brief Give this LookUpData a CartesianIndexMapper to use for a
+    ///        refined leaf on a GENERAL (non-CpGrid) locally adapted grid.
+    ///
+    /// Without one, a refined leaf's field-property index falls back to
+    /// walking to its level-0 ancestor and using \c levelIndexSet(0). That
+    /// is correct for CpGrid (whose level-0 index set IS, by construction,
+    /// the original field-property array order) but NOT in general: e.g.
+    /// dune-ALUGrid's level-0 index set has its own internal numbering with
+    /// no relationship to field-property array order, so every level-0 cell
+    /// -- refined or not -- silently gets the WRONG cell's properties as
+    /// soon as maxLevel() > 0 ANYWHERE in the domain (only invisible for a
+    /// perfectly uniform field). A CartesianIndexMapper that is correctly
+    /// (re)built across adapt() -- as OPM's ALUGrid vanguard already does,
+    /// by inheriting a refined child's Cartesian id from its parent -- gives
+    /// the right answer instead: a refined child's Cartesian id already IS
+    /// its level-0 ancestor's, so no ancestor walk is even needed.
+    void setCartesianIndexMapper(const Dune::CartesianIndexMapper<Grid>* cartMapper) const
+    { cartMapper_ = cartMapper; }
+
+    /// \brief Rebuild elemMapper_ in place after a grid.adapt().
+    ///
+    /// Dune::MultipleCodimMultipleGeomTypeMapper caches internal state at
+    /// construction time that does NOT automatically follow a later
+    /// grid.adapt() -- even when the GridView object it was built from keeps
+    /// its own identity and correctly tracks the live grid (the same reason
+    /// the discretization's own element/vertex mappers need placement-new
+    /// reconstruction, not just left alone, after every adapt). elemMapper_
+    /// is built ONCE, in LookUpData's constructor, and was never refreshed:
+    /// call this once per adapt, BEFORE any other LookUpData query, or
+    /// elemMapper_.index(e) on a post-adapt entity is undefined behaviour
+    /// (observed: wildly out-of-range values feeding a plain vector lookup
+    /// downstream, i.e. silent garbage, not a bounds assert).
+    void refreshElementMapper() const
+    {
+        using ElementMapper = Dune::MultipleCodimMultipleGeomTypeMapper<GridView>;
+        elemMapper_.~ElementMapper();
+        ::new (static_cast<void*>(&elemMapper_)) ElementMapper(gridView_, Dune::mcmgElementLayout());
+    }
+
 protected:
     /// \brief Field-property index for a leaf element on a GENERAL (non-CpGrid)
     ///        locally adapted grid: the level-0 ancestor's level-0 index (field
@@ -163,11 +205,19 @@ protected:
     int adaptedLevelZeroFieldPropIdx_(const Element& element) const;
 
     const GridView& gridView_;
-    Dune::MultipleCodimMultipleGeomTypeMapper<GridView> elemMapper_;
+    //! mutable: see refreshElementMapper(), called on a const LookUpData.
+    mutable Dune::MultipleCodimMultipleGeomTypeMapper<GridView> elemMapper_;
     bool isFieldPropInLgr_;
     //! leaf-index -> level-0 ancestor index, for a general adaptive grid
-    //! (non-CpGrid). Built lazily; rebuilt when the leaf size changes.
+    //! (non-CpGrid) that was NOT given a CartesianIndexMapper (fallback
+    //! only -- see setCartesianIndexMapper()'s doc for why this is wrong
+    //! for a grid like ALUGrid whose level-0 numbering has no relationship
+    //! to field-property array order). Built lazily; rebuilt when the leaf
+    //! size changes.
     mutable std::vector<int> leafToLevelZero_;
+    //! Optional: see setCartesianIndexMapper(). Null for CpGrid (unused
+    //! there) and for a general grid that never called the setter.
+    mutable const Dune::CartesianIndexMapper<Grid>* cartMapper_ {nullptr};
 }; // end LookUpData class
 
 /// LookUpCartesianData - To search field properties of leaf grid view elements via CartesianIndex (cartesianMapper)
@@ -303,9 +353,26 @@ template<typename Grid, typename GridView>
 template<typename Element>
 int Opm::LookUpData<Grid,GridView>::adaptedLevelZeroFieldPropIdx_(const Element& element) const
 {
-    // General (non-CpGrid) locally adapted grid: field properties are given for
-    // the unrefined macro grid (level 0), so a refined leaf inherits its
-    // level-0 ancestor's value. The level-0 index set is stable under adapt().
+    // General (non-CpGrid) locally adapted grid: field properties are given
+    // for the unrefined macro grid (level 0), so a refined leaf inherits its
+    // level-0 ancestor's value.
+    if (cartMapper_ != nullptr) {
+        // Preferred: a refined child's Cartesian id already equals its
+        // level-0 ancestor's (inherited across adapt() by the vanguard), so
+        // no ancestor walk is needed at all. See setCartesianIndexMapper().
+        const int leafIdx = static_cast<int>(elemMapper_.index(element));
+        const int cart = static_cast<int>(cartMapper_->cartesianIndex(leafIdx));
+        if (std::getenv("OPM_DEBUG_LOOKUPDATA") != nullptr) {
+            std::fprintf(stderr, "[lookupdata] elem level=%d leafIdx=%d cart=%d "
+                         "gridViewSize=%d\n",
+                         element.level(), leafIdx, cart,
+                         static_cast<int>(gridView_.size(0)));
+        }
+        return cart;
+    }
+    // Fallback: level-0's OWN index set. Only correct if it happens to match
+    // field-property array order (true for CpGrid by construction; NOT
+    // guaranteed for a grid like ALUGrid -- see setCartesianIndexMapper()).
     auto ancestor = element;
     while (ancestor.level() > 0) {
         ancestor = ancestor.father();
@@ -441,6 +508,12 @@ auto Opm::LookUpData<Grid,GridView>::getFieldPropIdx(const IndexType& elementOrI
             // level-0-index map (built lazily, invalidated when the leaf size
             // changes, i.e. after adapt()).
             if (gridView_.grid().maxLevel() > 0) {
+                if (cartMapper_ != nullptr) {
+                    // See setCartesianIndexMapper(): a refined child's
+                    // Cartesian id already equals its level-0 ancestor's.
+                    return static_cast<IndexType>(
+                        cartMapper_->cartesianIndex(static_cast<int>(elementOrIndex)));
+                }
                 if (leafToLevelZero_.size() != gridView_.size(0)) {
                     leafToLevelZero_.assign(gridView_.size(0), -1);
                     for (const auto& e : elements(gridView_)) {
