@@ -403,9 +403,16 @@ std::vector<double> Opm::LookUpData<Grid,GridView>::assignFieldPropsDoubleOnLeaf
                 ? adaptedLevelZeroFieldPropIdx_(element)
                 : this->getFieldPropIdx<Grid>(elemIdx);
             if (element.hasFather()) {
-                const auto fatherVolume = element.father().geometry().volume();
+                auto ancestor = element.father();
+                if (adaptedGeneral) {
+                    while (ancestor.level() > 0) {
+                        ancestor = ancestor.father();
+                    }
+                }
+                const auto ancestorVolume = ancestor.geometry().volume();
                 const auto& elemVolume = element.geometry().volume();
-                fieldPropOnLeaf[elemIdx] = fieldProp[fieldPropIdx] * elemVolume / fatherVolume;
+                fieldPropOnLeaf[elemIdx] =
+                    fieldProp[fieldPropIdx] * elemVolume / ancestorVolume;
             }
             else {
                 fieldPropOnLeaf[elemIdx] = fieldProp[fieldPropIdx];
