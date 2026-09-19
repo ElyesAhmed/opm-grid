@@ -80,13 +80,13 @@ macro(opm-grid_tests_hook)
   if(MPI_FOUND)
     set(tests_4proc
       distribution_test
-      partition_of_unity_test
       test_communication_utils
       partition_cell_groups_test
       distributed_builder_test
     )
     if(USE_OPM_COMMON)
       list(APPEND tests_4proc
+        partition_of_unity_test
       )
     endif()
 
