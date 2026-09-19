@@ -176,6 +176,28 @@ public:
     void setCartesianIndexMapper(const Dune::CartesianIndexMapper<Grid>* cartMapper) const
     { cartMapper_ = cartMapper; }
 
+    /// \brief Give this LookUpData a Cartesian-index -> active-index
+    ///        translator, for a GENERAL (non-CpGrid) locally adapted grid
+    ///        whose deck has inactive cells (e.g. PORO == 0).
+    ///
+    /// setCartesianIndexMapper() alone is only correct when every cell is
+    /// active: cartMapper_->cartesianIndex(...) returns the RAW, uncompacted
+    /// Cartesian index, but field-property vectors from FieldPropsManager
+    /// are compacted to ACTIVE-cell order whenever the deck has inactive
+    /// cells -- the two numbering schemes only coincide when there are none.
+    /// Without a translator, a refined child whose level-0 ancestor's
+    /// Cartesian index lies past the count of active cells reads past the
+    /// end of the field-property vector: silent garbage, not a bounds
+    /// assert (observed: a bogus PVTNUM tripping FlowGenericProblem's
+    /// region-count check). CpGrid needs no equivalent because its own
+    /// getFieldPropIdx() path already returns an active-compacted index via
+    /// Entity::getOrigin().index(). The translator is applied to the
+    /// Cartesian index cartMapper_ already produces; a grid with no
+    /// inactive cells needs no translator (identity is safe there too, but
+    /// a null translator is the cheaper default -- see the two call sites).
+    void setCartesianToActiveIndex(std::function<int(int)> cartesianToActive) const
+    { cartesianToActive_ = std::move(cartesianToActive); }
+
     /// \brief Rebuild elemMapper_ in place after a grid.adapt().
     ///
     /// Dune::MultipleCodimMultipleGeomTypeMapper caches internal state at
@@ -218,6 +240,10 @@ protected:
     //! Optional: see setCartesianIndexMapper(). Null for CpGrid (unused
     //! there) and for a general grid that never called the setter.
     mutable const Dune::CartesianIndexMapper<Grid>* cartMapper_ {nullptr};
+    //! Optional: see setCartesianToActiveIndex(). Empty (identity) for
+    //! CpGrid (unused there) and for a general grid whose deck has no
+    //! inactive cells.
+    mutable std::function<int(int)> cartesianToActive_;
 }; // end LookUpData class
 
 /// LookUpCartesianData - To search field properties of leaf grid view elements via CartesianIndex (cartesianMapper)
@@ -362,13 +388,18 @@ int Opm::LookUpData<Grid,GridView>::adaptedLevelZeroFieldPropIdx_(const Element&
         // no ancestor walk is needed at all. See setCartesianIndexMapper().
         const int leafIdx = static_cast<int>(elemMapper_.index(element));
         const int cart = static_cast<int>(cartMapper_->cartesianIndex(leafIdx));
+        // See setCartesianToActiveIndex(): cart is the RAW Cartesian index;
+        // field-property vectors are active-compacted whenever the deck has
+        // inactive cells, so translate unless the grid has none (no
+        // translator set).
+        const int fieldPropIdx = cartesianToActive_ ? cartesianToActive_(cart) : cart;
         if (std::getenv("OPM_DEBUG_LOOKUPDATA") != nullptr) {
             std::fprintf(stderr, "[lookupdata] elem level=%d leafIdx=%d cart=%d "
-                         "gridViewSize=%d\n",
-                         element.level(), leafIdx, cart,
+                         "fieldPropIdx=%d gridViewSize=%d\n",
+                         element.level(), leafIdx, cart, fieldPropIdx,
                          static_cast<int>(gridView_.size(0)));
         }
-        return cart;
+        return fieldPropIdx;
     }
     // Fallback: level-0's OWN index set. Only correct if it happens to match
     // field-property array order (true for CpGrid by construction; NOT
@@ -518,8 +549,13 @@ auto Opm::LookUpData<Grid,GridView>::getFieldPropIdx(const IndexType& elementOrI
                 if (cartMapper_ != nullptr) {
                     // See setCartesianIndexMapper(): a refined child's
                     // Cartesian id already equals its level-0 ancestor's.
-                    return static_cast<IndexType>(
+                    // See setCartesianToActiveIndex(): translate the RAW
+                    // Cartesian id to the active-compacted field-property
+                    // index whenever the deck has inactive cells.
+                    const int cart = static_cast<int>(
                         cartMapper_->cartesianIndex(static_cast<int>(elementOrIndex)));
+                    return static_cast<IndexType>(
+                        cartesianToActive_ ? cartesianToActive_(cart) : cart);
                 }
                 if (leafToLevelZero_.size() != gridView_.size(0)) {
                     leafToLevelZero_.assign(gridView_.size(0), -1);
